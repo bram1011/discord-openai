@@ -30,4 +30,3 @@ jobs:
         context: .
         push: true
         tags: docker.bramhampton.ml/bram/discord-openai:latest
-        platforms: linux/arm64,linux/amd64
