@@ -30,4 +30,4 @@ jobs:
       with:
         context: .
         push: true
-        tags: discord-openai:latest
+        tags: bram/discord-openai:latest
