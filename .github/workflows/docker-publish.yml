@@ -28,5 +28,6 @@ jobs:
     - name: Build and push
       uses: docker/build-push-action@v3
       with:
+        context: .
         push: true
-        tags: discord-openai:latest
+        tags: docker.bramhampton.ml/discord-openai:latest
