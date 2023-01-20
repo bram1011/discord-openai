@@ -30,4 +30,4 @@ jobs:
       with:
         context: .
         push: true
-        tags: docker.bramhampton.ml/discord-openai:latest
+        tags: discord-openai:latest
