@@ -6,6 +6,8 @@ COPY requirements.txt ./
 
 RUN pip install -r requirements.txt
 
-COPY bot.py ./
+HEALTHCHECK CMD [ "curl", "http://localhost:5000/health" ]
 
-CMD ["python", "bot.py"]
+COPY bot.py .env ./
+
+CMD ["flask", "--app", "bot", "run"]

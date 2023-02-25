@@ -2,6 +2,9 @@ from dotenv import load_dotenv
 import openai
 import os
 import interactions
+import json
+from flask import Flask
+from healthcheck import HealthCheck, EnvironmentDump
 
 load_dotenv()
 
@@ -57,5 +60,22 @@ def generate_wisdom(userPrompt: str):
 def generate_image(prompt: str):
     print(f'Generating image with prompt: {prompt}')
     return openai.Image.create(prompt=prompt, n=1, size="256x256")['data'][0]['url']
+def check_latency():
+    if (bot.latency > 1000 or bot.latency is None):
+        return False, bot.latency
+    return True, bot.latency
+async def user_dump():
+    user = await bot.get_self_user()
+    if (user is not None):
+        return json.dumps(user)
 
-bot.start()
+pid = os.fork()
+if pid == 0:
+    bot.start()
+else:
+    app = Flask(__name__)
+    health = HealthCheck(checkers=[check_latency])
+    environment = EnvironmentDump()
+    environment.add_section("user", user_dump)
+    app.add_url_rule('/health', 'health', view_func=lambda: health.run())
+    app.add_url_rule('/environment', 'environment', view_func=lambda: environment.run())
