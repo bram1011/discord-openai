@@ -2,11 +2,17 @@ from dotenv import load_dotenv
 import openai
 import os
 import interactions
-import json
+import datetime
+import pytz
 from flask import Flask
 from healthcheck import HealthCheck, EnvironmentDump
 
 load_dotenv()
+
+DATE_FORMAT = "%m-%d-%Y %I:%M%p"
+datetime.tzinfo = pytz.timezone('US/Eastern')
+
+connected = False
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -60,21 +66,50 @@ def generate_wisdom(userPrompt: str):
 def generate_image(prompt: str):
     print(f'Generating image with prompt: {prompt}')
     return openai.Image.create(prompt=prompt, n=1, size="256x256")['data'][0]['url']
+
+def message_role_members(roleId: interactions.Snowflake, content: str):
+    roleToMessage = None
+    coroutines = []
+    for guild in bot.guilds:
+        for role in guild.roles:
+            if role.id == roleId:
+                roleToMessage = role
+        if roleToMessage is not None:
+            for member in guild.members:
+                if roleToMessage in member.roles:
+                    coroutines.append(member.user.send(content=content))
+    for coroutine in coroutines:
+        loop.run_until_complete(coroutine)
+
 def check_latency():
     if (bot.latency > 1000 or bot.latency is None):
         return False, bot.latency
     return True, bot.latency
+
+@bot.event
+async def on_disconnect():
+    connected = False
+    print("WiseBot has been disconnected")
+
+@bot.event
+async def on_ready():
+    connected = True
+    print("WiseBot is ready")
+
 async def user_dump():
     user = await bot.get_self_user()
     if (user is not None):
-        return json.dumps(user)
+        return 
+
+def check_if_ready():
+    return connected
 
 pid = os.fork()
 if pid == 0:
     bot.start()
 else:
     app = Flask(__name__)
-    health = HealthCheck(checkers=[check_latency])
+    health = HealthCheck(checkers=[check_latency, check_if_ready])
     environment = EnvironmentDump()
     environment.add_section("user", user_dump)
     app.add_url_rule('/health', 'health', view_func=lambda: health.run())

@@ -8,7 +8,7 @@ on:
 jobs:
   push_to_registry:
     name: Push To Registry
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
     - name: Checkout repo
       uses: actions/checkout@v2.6.0
@@ -28,4 +28,3 @@ jobs:
         context: .
         push: true
         tags: docker.bramhampton.ml/discord-openai:latest
-        platforms: linux/arm64
