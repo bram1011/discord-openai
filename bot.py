@@ -9,6 +9,7 @@ load_dotenv()
 
 DATE_FORMAT = "%m-%d-%Y %I:%M%p"
 
+global connected
 connected = False
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -64,36 +65,26 @@ def generate_image(prompt: str):
     print(f'Generating image with prompt: {prompt}')
     return openai.Image.create(prompt=prompt, n=1, size="256x256")['data'][0]['url']
 
-def check_latency():
-    if (bot.latency > 1000 or bot.latency is None):
-        return False, bot.latency
-    return True, bot.latency
-
 @bot.event
 async def on_disconnect():
+    global connected
     connected = False
     print("WiseBot has been disconnected")
 
 @bot.event
 async def on_ready():
+    global connected
     connected = True
     print("WiseBot is ready")
 
-async def user_dump():
-    user = await bot.get_self_user()
-    if (user is not None):
-        return 
-
 def check_if_ready():
-    return connected
+    global connected
+    return connected, connected
 
 pid = os.fork()
 if pid == 0:
     bot.start()
 else:
     app = Flask(__name__)
-    health = HealthCheck(checkers=[check_latency, check_if_ready])
-    environment = EnvironmentDump()
-    environment.add_section("user", user_dump)
+    health = HealthCheck(checkers=[check_if_ready])
     app.add_url_rule('/health', 'health', view_func=lambda: health.run())
-    app.add_url_rule('/environment', 'environment', view_func=lambda: environment.run())
