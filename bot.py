@@ -2,15 +2,12 @@ from dotenv import load_dotenv
 import openai
 import os
 import interactions
-import datetime
-import pytz
 from flask import Flask
 from healthcheck import HealthCheck, EnvironmentDump
 
 load_dotenv()
 
 DATE_FORMAT = "%m-%d-%Y %I:%M%p"
-datetime.tzinfo = pytz.timezone('US/Eastern')
 
 connected = False
 
