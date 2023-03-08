@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 import openai
 import os
 import interactions
-from worker import worker, process
+from worker import worker
 from flask import Flask
 from healthcheck import HealthCheck
 
