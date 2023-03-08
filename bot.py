@@ -2,14 +2,12 @@ from dotenv import load_dotenv
 import openai
 import os
 import interactions
+from worker import worker, process
 from flask import Flask
-from healthcheck import HealthCheck, EnvironmentDump
+from healthcheck import HealthCheck
 
 load_dotenv()
 
-DATE_FORMAT = "%m-%d-%Y %I:%M%p"
-
-global connected
 connected = False
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -81,10 +79,12 @@ def check_if_ready():
     global connected
     return connected, connected
 
-pid = os.fork()
-if pid == 0:
+@worker
+def start_bot_in_new_process():
     bot.start()
-else:
-    app = Flask(__name__)
-    health = HealthCheck(checkers=[check_if_ready])
-    app.add_url_rule('/health', 'health', view_func=lambda: health.run())
+
+app = Flask(__name__)
+health = HealthCheck(checkers=[check_if_ready])
+app.add_url_rule('/health', 'health', view_func=lambda: health.run())
+
+start_bot_in_new_process()
