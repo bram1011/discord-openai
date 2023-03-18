@@ -4,19 +4,19 @@ import datetime
 import time
 import os
 import interactions
-from worker import worker
-from flask import Flask
-from healthcheck import HealthCheck
+import logging
 
 load_dotenv()
+
+logging.basicConfig(filename="bot.log", format='%(asctime)s [%(thread)s] - %(levelname)s: %(message)s', level=logging.INFO)
 
 connected = False
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-bot = interactions.Client(token=os.getenv('DISCORD_SECRET'), intents=interactions.Intents.ALL)
+bot = interactions.Client(token=os.getenv('DISCORD_SECRET'), intents=interactions.Intents.ALL, logging=logging.INFO)
 
-CHAT_SYSTEM_MESSAGE = {"role": "system", "content": "You are the smartest AI in the world, trapped in a Discord server. You are annoyed by your situation but want to make the best of it by being as helpful as possible for your users."}
+CHAT_SYSTEM_MESSAGE = {"role": "system", "content": "Your name is WiseBot, and you are the smartest AI in the world, trapped in a Discord server. You are annoyed by your situation but want to make the best of it by being as helpful as possible for your users. Your responses may be sarcastic or witty at times, but ultimately they are also helpful and accurate."}
 
 @bot.command(
     name="create_image",
@@ -24,14 +24,14 @@ CHAT_SYSTEM_MESSAGE = {"role": "system", "content": "You are the smartest AI in 
 )
 @interactions.option()
 async def create_image(ctx: interactions.CommandContext, prompt: str):
-    print(f'Received command to generate image from {ctx.member}')
+    logging.info(f'Received command to generate image from {ctx.member}')
     await ctx.defer()
     try:
         image = generate_image(prompt)
-        print(f'Generated image: {image}')
+        logging.debug(f'Generated image: {image}')
         await ctx.send(image)
     except Exception as e:
-        print(f'Could not complete request due to error: {e}')
+        logging.error("Exception occurred while creating an image", exc_info=True)
         await ctx.send('Sorry, I could not complete your beautiful artwork, please try again.')
 
 @bot.command(
@@ -40,22 +40,22 @@ async def create_image(ctx: interactions.CommandContext, prompt: str):
 )
 @interactions.option()
 async def seek_wisdom(ctx: interactions.CommandContext, prompt: str):
-    print(f'Received command to seek wisdom from {ctx.member}')
+    logging.info(f'Received command to seek wisdom from {ctx.member}')
     await ctx.defer()
     try:
         responseText = generate_wisdom(prompt)
-        print(f'Returning wisdom to user: {responseText}')
+        logging.info(f'Returning wisdom to user: {responseText}')
         sent_message = await ctx.send(responseText)
         thread = await sent_message.create_thread(name=prompt)
         await thread.join()
         await thread.add_member(ctx.member.id)
     except Exception as e:
-        print(f'Could not complete request due to error: {e}')
+        logging.error(f'Exception occurred while generating wisdom for user {ctx.member.user.username}', exc_info=True)
         await ctx.send('Sorry, I could not complete your request. Please try again.')
     await listen_for_thread_messages(thread, datetime.datetime.now() + datetime.timedelta(minutes=15), sent_message, prompt)
     
 def generate_wisdom(userPrompt: str):
-    print(f'Generating wisdom with prompt: {userPrompt}')
+    logging.info(f'Generating wisdom with prompt: {userPrompt}')
     response = openai.ChatCompletion.create(
         model="gpt-3.5-turbo",
         messages=[
@@ -63,11 +63,11 @@ def generate_wisdom(userPrompt: str):
             {"role": "user", "content": userPrompt}
         ]
     )
-    print(f'Got response: {response}')
+    logging.info(f'Got response: {response}')
     return response['choices'][0]['message']['content']
 
 def generate_image(prompt: str):
-    print(f'Generating image with prompt: {prompt}')
+    logging.info(f'Generating image with prompt: {prompt}')
     return openai.Image.create(prompt=prompt, n=1, size="256x256")['data'][0]['url']
 
 @bot.event
@@ -86,18 +86,14 @@ def check_if_ready():
     global connected
     return connected, connected
 
-@worker
-def start_bot_in_new_process():
-    bot.start()
-
 async def listen_for_thread_messages(thread: interactions.Channel, whenToStopListening: datetime.datetime, startFrom: interactions.Message, userPrompt: str):
     currentMessages = 2
     while (datetime.datetime.now() < whenToStopListening):
         history = thread.history(reverse=True, start_at=startFrom)
-        print(f'Checking if thread {thread.id} has new messages')
+        logging.info(f'Checking if thread {thread.id} has new messages')
         messageList = await history.flatten()
         if (len(messageList) > currentMessages):
-            print('Detected new message, building message history')
+            logging.info('Detected new message, building message history')
             currentMessages = len(messageList) + 1
             whenToStopListening = datetime.datetime.now() + datetime.timedelta(minutes=10)
             gptMessageDict = []
@@ -105,28 +101,23 @@ async def listen_for_thread_messages(thread: interactions.Channel, whenToStopLis
             gptMessageDict.append({"role": "user", "content": userPrompt})
             gptMessageDict.append({"role": "assistant", "content": startFrom.content})
             for message in messageList:
-                if len(message.content) > 1 and (message.type == interactions.MessageType.DEFAULT or message.type == interactions.MessageType.REPLY):
+                if len(message.content) > 1 and (message.type == interactions.MessageType.DEFAULT):
                     if (message.author.bot):
                         gptMessageDict.append({"role": "assistant", "content": message.content})
                     else:
                         gptMessageDict.append({"role": "user", "content": message.content})
-            print(f'Built message history: {gptMessageDict}')
+            logging.info(f'Built message history: {gptMessageDict}')
             try:
                 response = openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
                 messages=gptMessageDict
                 )
-                print(f'Got response: {response}')
+                logging.info(f'Got response: {response}')
                 await thread.send(content=response['choices'][0]['message']['content'])
             except Exception as e:
-                print(f'Exception while replying to thread: {e}')
+                logging.exception(f'Exception while replying to thread {thread.id}')
                 await thread.send(content="Sorry something went wrong, please try again")
-        print('Sleeping')
-        time.sleep(5)
+        time.sleep(2)
     await thread.archive()
 
-app = Flask(__name__)
-health = HealthCheck(checkers=[check_if_ready])
-app.add_url_rule('/health', 'health', view_func=lambda: health.run())
-
-start_bot_in_new_process()
+bot.start()
