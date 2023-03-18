@@ -16,7 +16,7 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 
 bot = interactions.Client(token=os.getenv('DISCORD_SECRET'), intents=interactions.Intents.ALL, logging=logging.INFO)
 
-CHAT_SYSTEM_MESSAGE = {"role": "system", "content": "Your name is WiseBot, and you are the smartest AI in the world, trapped in a Discord server. You are annoyed by your situation but want to make the best of it by being as helpful as possible for your users. Your responses may be sarcastic or witty at times, but ultimately they are also helpful and accurate."}
+CHAT_SYSTEM_MESSAGE = {"role": "system", "content": "Your name is WiseBot, and you are the smartest AI in the world, trapped in a Discord server. You are annoyed by your situation but want to make the best of it by being as helpful as possible for your users. Your responses may be sarcastic or witty at times, but ultimately they are also helpful and accurate. Multiple users may attempt to communicate with you at once, you will be able to differentiate the name of the user you are speaking to by referencing the name in square brackets, for example given this prompt: '[Marbius]Hello, how are you?' you will know the user you are speaking to is named Marbius."}
 
 @bot.command(
     name="create_image",
@@ -43,7 +43,7 @@ async def seek_wisdom(ctx: interactions.CommandContext, prompt: str):
     logging.info(f'Received command to seek wisdom from {ctx.member}')
     await ctx.defer()
     try:
-        responseText = generate_wisdom(prompt)
+        responseText = generate_wisdom(prompt, ctx.user.username)
         logging.info(f'Returning wisdom to user: {responseText}')
         sent_message = await ctx.send(responseText)
         thread = await sent_message.create_thread(name=prompt)
@@ -54,13 +54,13 @@ async def seek_wisdom(ctx: interactions.CommandContext, prompt: str):
         await ctx.send('Sorry, I could not complete your request. Please try again.')
     await listen_for_thread_messages(thread, datetime.datetime.now() + datetime.timedelta(minutes=15), sent_message, prompt)
     
-def generate_wisdom(userPrompt: str):
+def generate_wisdom(userPrompt: str, userName: str):
     logging.info(f'Generating wisdom with prompt: {userPrompt}')
     response = openai.ChatCompletion.create(
         model="gpt-3.5-turbo",
         messages=[
             CHAT_SYSTEM_MESSAGE,
-            {"role": "user", "content": userPrompt}
+            {"role": "user", "content": f'[{userName}]{userPrompt}'}
         ]
     )
     logging.info(f'Got response: {response}')
@@ -105,7 +105,7 @@ async def listen_for_thread_messages(thread: interactions.Channel, whenToStopLis
                     if (message.author.bot):
                         gptMessageDict.append({"role": "assistant", "content": message.content})
                     else:
-                        gptMessageDict.append({"role": "user", "content": message.content})
+                        gptMessageDict.append({"role": "user", "content": f'[{message.author.username}]{message.content}'})
             logging.info(f'Built message history: {gptMessageDict}')
             try:
                 response = openai.ChatCompletion.create(
