@@ -8,7 +8,7 @@ import logging
 
 load_dotenv()
 
-logging.basicConfig(filename="bot.log", format='%(asctime)s [%(thread)s] - %(levelname)s: %(message)s', level=logging.INFO)
+logging.basicConfig(format='%(asctime)s [%(thread)s] - %(levelname)s: %(message)s', level=logging.INFO)
 
 connected = False
 
