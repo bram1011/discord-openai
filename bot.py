@@ -75,12 +75,17 @@ def generate_image(prompt: str):
 @bot.event
 async def on_disconnect():
     delete_health_file()
-    print("WiseBot has been disconnected")
+    logging.info("WiseBot has been disconnected")
 
 @bot.event
 async def on_ready():
     create_health_file()
-    print("WiseBot is ready")
+    logging.info("WiseBot is ready")
+
+@bot.event
+async def on_start():
+    create_health_file()
+    logging.info("WiseBot is starting")
 
 async def listen_for_thread_messages(thread: interactions.Channel, whenToStopListening: datetime.datetime, startFrom: interactions.Message, userPrompt: str):
     currentMessages = 2
