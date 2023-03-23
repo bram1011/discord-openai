@@ -1,5 +1,6 @@
 import openai
 import discord
+from discord import ui
 import os
 import logging
 import redis
@@ -54,6 +55,15 @@ async def on_disconnect():
     delete_health_file()
     logging.info("WiseBot is disconnected")
 
+@client.tree.command(name="sync", description="Sync WiseBot with Discord", guild=client.get_guild(731728721588781057))
+async def sync(interaction: discord.Interaction):
+    logging.info(f'Received command to sync WiseBot from {interaction.user}')
+    if not interaction.user.guild_permissions.administrator:
+        interaction.response.send_message("You must be an administrator to sync WiseBot", ephemeral=True)
+        return
+    await client.tree.sync()
+    await interaction.response.send_message("Synced WiseBot with Discord", ephemeral=True)
+
 @client.tree.command(name="seek_wisdom", description="Ask WiseBot for wisdom")
 async def seek_wisdom(interaction: discord.Interaction, prompt: str):
     logging.info(f'Received command to seek wisdom from {interaction.user}')
@@ -96,13 +106,13 @@ async def on_message(message: discord.Message):
         historyList.append({"role": "user", "content": f'{message.author.display_name}:{message.content}'})
         redis.set(str(message.channel.id), json.dumps(historyList))
         logging.info(f'Generating wisdom with prompt: {message.content}')
-        response = generate_wisdom(historyList)
+        async with message.channel.typing():
+            response = generate_wisdom(historyList)
         await message.channel.send(content=response)
 
 def build_event_embed(event: discord.ScheduledEvent, title: str):
     if event.channel is not None:
         embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.channel.jump_url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE))
-        embed.url = event.channel.jump_url
         embed.set_footer(text=f'Event is in {event.channel.name} in {event.channel.guild.name}, click me to jump to the event!')
     else:
         embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE))
@@ -121,6 +131,11 @@ async def send_event_reminders(event: discord.ScheduledEvent, title: str):
         logging.info(f'Notifying user {user}')
         delete_time: datetime = event.start_time + timedelta(minutes=5)
         await user.send(embed=embed, delete_after=(delete_time - datetime.now(delete_time.tzinfo)).total_seconds())
+
+@client.event
+async def on_scheduled_event_create(event: discord.ScheduledEvent):
+    logging.info(f'Scheduled event created: {event.id}')
+    await event.guild.system_channel.send(embed=build_event_embed(event, f'Event {event.name} has been created!'))
 
 @client.event
 async def on_scheduled_event_update(before: discord.ScheduledEvent, after: discord.ScheduledEvent):
