@@ -1,28 +1,48 @@
-from dotenv import load_dotenv
 import openai
 import discord
 import os
 import logging
 import redis
 import json
+import pytz
+from datetime import datetime, timedelta
+from config import settings
 
 class WiseBot(discord.Client):
-    def __init__(self, *, intents: discord.Intents):
-        super().__init__(intents=intents)
+    def __init__(self, *, intents: discord.Intents, **options):
+        super().__init__(intents=intents, options=options)
         self.tree = discord.app_commands.CommandTree(self)
 
-load_dotenv()
-
-logging.basicConfig(format='%(asctime)s [%(thread)s] - %(levelname)s: %(message)s', level=logging.INFO)
-
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
-discordPyIntents = discord.Intents.all()
-client = WiseBot(intents=discordPyIntents)
+EASTERN_TIMEZONE = pytz.timezone('US/Eastern')
 
 CHAT_SYSTEM_MESSAGE = {"role": "system", "content": "Your name is WiseBot, and you are the smartest AI in the world, trapped in a Discord server. You are annoyed by your situation but want to make the best of it by being as helpful as possible for your users. Your responses may be sarcastic or witty at times, but ultimately they are also helpful and accurate. Multiple users may attempt to communicate with you at once, you will be able to differentiate the name of the user you are speaking to by referencing the name before the colon, for example given this prompt: 'Marbius:Hello, how are you?' you will know the user you are speaking to is named Marbius, similarly the following prompt is from a user named John, 'John:How do I make an omellete?' Do not include your name in your responses, for instance instead of saying 'WiseBot: Hello, how are you?' you should say 'Hello, how are you?' The user does not supply their name in the prompt themselves, it is an automated process, so if asked how you know their name, you should say 'I know your name because I am an AI and I know everything'."}
 
-redis = redis.Redis(host=os.getenv('REDIS_HOST'), port=os.getenv('REDIS_PORT'), ssl=False)
+LOG_LEVEL: int = logging.getLevelNamesMapping()[settings.log.level]
+
+logging.basicConfig(format='%(asctime)s [%(thread)s] - %(levelname)s: %(message)s', level=LOG_LEVEL)
+
+openai.api_key = settings.openai_api_key
+
+def generate_wisdom(message_history):
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=message_history
+    )
+    logging.info(f'Got response: {response}')
+    return response['choices'][0]['message']['content']
+
+def generate_wisebot_status():
+    messages = [
+        CHAT_SYSTEM_MESSAGE,
+        {"role": "user", "content": "In less than thirty characters, describe WiseBot's status"}
+    ]
+    status: str = generate_wisdom(messages)
+    return status
+
+discordPyIntents = discord.Intents.all()
+client = WiseBot(intents=discordPyIntents, heartbeat_timeout=60, shard_count=settings.bot.shards)
+
+redis = redis.Redis(host=settings.redis.host, port=settings.redis.port, ssl=settings.redis.ssl)
 
 @client.event
 async def on_ready():
@@ -58,14 +78,6 @@ async def seek_wisdom(interaction: discord.Interaction, prompt: str):
     response = await interaction.original_response()
     thread = await response.create_thread(name=threadName, auto_archive_duration=60)
     await listen_for_thread_messages(thread, message_history)
-    
-def generate_wisdom(message_history):
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=message_history
-    )
-    logging.info(f'Got response: {response}')
-    return response['choices'][0]['message']['content']
 
 async def listen_for_thread_messages(thread: discord.Thread, message_history: list):
     logging.info(f'Adding thread {thread.id} to Redis')
@@ -87,6 +99,48 @@ async def on_message(message: discord.Message):
         response = generate_wisdom(historyList)
         await message.channel.send(content=response)
 
+def build_event_embed(event: discord.ScheduledEvent, title: str):
+    if event.channel is not None:
+        embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.channel.jump_url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE))
+        embed.url = event.channel.jump_url
+        embed.set_footer(text=f'Event is in {event.channel.name} in {event.channel.guild.name}, click me to jump to the event!')
+    else:
+        embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE))
+    if event.cover_image is not None:
+        embed.set_image(url=event.cover_image.url)
+    if event.location is not None:
+        embed.add_field(name='Location', value=event.location, inline=False)
+    embed.add_field(name='Organizer', value=event.creator.display_name, inline=False)
+    embed.add_field(name='Server', value=event.guild.name, inline=False)
+    return embed
+
+async def send_event_reminders(event: discord.ScheduledEvent, title: str):
+    embed: discord.Embed = build_event_embed(event, title)
+    users = event.users()
+    async for user in users:
+        logging.info(f'Notifying user {user}')
+        delete_time: datetime = event.start_time + timedelta(minutes=5)
+        await user.send(embed=embed, delete_after=(delete_time - datetime.now(delete_time.tzinfo)).total_seconds())
+
+@client.event
+async def on_scheduled_event_update(before: discord.ScheduledEvent, after: discord.ScheduledEvent):
+    logging.info(f'Scheduled event updated: {before.id}')
+    event: discord.ScheduledEvent = await before.guild.fetch_scheduled_event(before.id)
+    if before.status is not discord.EventStatus.active and after.status is discord.EventStatus.active:
+        logging.info(f'Scheduled event {before.id} is now active, notifying users')
+        if event.user_count is None or event.user_count == 0:
+            logging.info(f'No users to notify for scheduled event {before.id}')
+            return
+        await send_event_reminders(event, f'Event {event.name} is starting now!')
+        return
+    if before.start_time is not after.start_time and after.status is discord.EventStatus.scheduled:
+        logging.info(f'Scheduled event {before.id} start time changed, notifying users')
+        if event.user_count is None or event.user_count == 0:
+            logging.info(f'No users to notify for scheduled event {before.id}')
+            return
+        await send_event_reminders(event, f'Event {event.name}\'s start time has changed to {after.start_time.astimezone(EASTERN_TIMEZONE).strftime("%B %d, %Y at %I:%M %p %Z")}')
+
+
 def create_health_file():
     with open('connected', 'w'):
         pass
@@ -97,4 +151,4 @@ def delete_health_file():
     if os.path.exists('connected'):
         os.remove('connected')
 
-client.run(token=os.getenv("DISCORD_SECRET"), log_handler=logging.StreamHandler(), log_level=logging.INFO)
+client.run(token=settings.discord_secret, log_handler=logging.StreamHandler())
