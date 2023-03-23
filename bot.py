@@ -46,6 +46,7 @@ async def seek_wisdom(interaction: discord.Interaction, prompt: str):
         logging.info(f'Generating wisdom with prompt: {prompt}')
         await interaction.response.defer(thinking=True)
         responseText = generate_wisdom(message_history)
+        message_history.append({"role": "assistant", "content": responseText})
     except Exception as e:
         logging.error(f'Exception occurred while generating wisdom for user {interaction.user.display_name}', exc_info=True)
     logging.info(f'Returning wisdom to user: {responseText}')
