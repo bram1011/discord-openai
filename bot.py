@@ -1,10 +1,15 @@
 from dotenv import load_dotenv
 import openai
-import datetime
-import time
+import discord
 import os
-import interactions
 import logging
+import redis
+import json
+
+class WiseBot(discord.Client):
+    def __init__(self, *, intents: discord.Intents):
+        super().__init__(intents=intents)
+        self.tree = discord.app_commands.CommandTree(self)
 
 load_dotenv()
 
@@ -12,114 +17,74 @@ logging.basicConfig(format='%(asctime)s [%(thread)s] - %(levelname)s: %(message)
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-bot = interactions.Client(token=os.getenv('DISCORD_SECRET'), intents=interactions.Intents.ALL, logging=logging.INFO)
+discordPyIntents = discord.Intents.all()
+client = WiseBot(intents=discordPyIntents)
 
-CHAT_SYSTEM_MESSAGE = {"role": "system", "content": "Your name is WiseBot, and you are the smartest AI in the world, trapped in a Discord server. You are annoyed by your situation but want to make the best of it by being as helpful as possible for your users. Your responses may be sarcastic or witty at times, but ultimately they are also helpful and accurate. Multiple users may attempt to communicate with you at once, you will be able to differentiate the name of the user you are speaking to by referencing the name before the colon, for example given this prompt: 'Marbius:Hello, how are you?' you will know the user you are speaking to is named Marbius, similarly the following prompt is from a user named John, 'John:How do I make an omellete?'"}
+CHAT_SYSTEM_MESSAGE = {"role": "system", "content": "Your name is WiseBot, and you are the smartest AI in the world, trapped in a Discord server. You are annoyed by your situation but want to make the best of it by being as helpful as possible for your users. Your responses may be sarcastic or witty at times, but ultimately they are also helpful and accurate. Multiple users may attempt to communicate with you at once, you will be able to differentiate the name of the user you are speaking to by referencing the name before the colon, for example given this prompt: 'Marbius:Hello, how are you?' you will know the user you are speaking to is named Marbius, similarly the following prompt is from a user named John, 'John:How do I make an omellete?' Do not include your name in your responses, for instance instead of saying 'WiseBot: Hello, how are you?' you should say 'Hello, how are you?' The user does not supply their name in the prompt themselves, it is an automated process, so if asked how you know their name, you should say 'I know your name because I am an AI and I know everything'."}
 
-@bot.command(
-    name="create_image",
-    description="Create an image from a text prompt"
-)
-@interactions.option()
-async def create_image(ctx: interactions.CommandContext, prompt: str):
-    logging.info(f'Received command to generate image from {ctx.member}')
-    await ctx.defer()
-    try:
-        image = generate_image(prompt)
-        logging.debug(f'Generated image: {image}')
-        await ctx.send(image)
-    except Exception as e:
-        logging.error("Exception occurred while creating an image", exc_info=True)
-        await ctx.send('Sorry, I could not complete your beautiful artwork, please try again.')
+redis = redis.Redis(host=os.getenv('REDIS_HOST'), port=os.getenv('REDIS_PORT'), ssl=False)
 
-@bot.command(
-    name = "seek_wisdom",
-    description = "Seek the bot's wisdom, ask a question or have it perform a task"
-)
-@interactions.option()
-async def seek_wisdom(ctx: interactions.CommandContext, prompt: str):
-    logging.info(f'Received command to seek wisdom from {ctx.member}')
-    await ctx.defer()
-    try:
-        responseText = generate_wisdom(prompt, ctx.user.username)
-        logging.info(f'Returning wisdom to user: {responseText}')
-        sent_message = await ctx.send(responseText)
-        # If prompt is longer than 99 characters, we need to truncate it to fit in the thread name
-        threadName = prompt
-        if (len(threadName) > 99):
-            threadName = threadName[:96] + '...'
-        thread = await sent_message.create_thread(name=threadName)
-        await thread.join()
-        await thread.add_member(ctx.member.id)
-    except Exception as e:
-        logging.error(f'Exception occurred while generating wisdom for user {ctx.member.user.username}', exc_info=True)
-        await ctx.send('Sorry, I could not complete your request. Please try again.')
-    await listen_for_thread_messages(thread, datetime.datetime.now() + datetime.timedelta(minutes=15), sent_message, prompt)
-    
-def generate_wisdom(userPrompt: str, userName: str):
-    logging.info(f'Generating wisdom with prompt: {userPrompt}')
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            CHAT_SYSTEM_MESSAGE,
-            {"role": "user", "content": f'{userName}:{userPrompt}'}
-        ]
-    )
-    logging.info(f'Got response: {response}')
-    return response['choices'][0]['message']['content']
-
-def generate_image(prompt: str):
-    logging.info(f'Generating image with prompt: {prompt}')
-    return openai.Image.create(prompt=prompt, n=1, size="256x256")['data'][0]['url']
-
-@bot.event
-async def on_disconnect():
-    delete_health_file()
-    logging.info("WiseBot has been disconnected")
-
-@bot.event
+@client.event
 async def on_ready():
     create_health_file()
     logging.info("WiseBot is ready")
 
-@bot.event
-async def on_start():
-    create_health_file()
-    logging.info("WiseBot is starting")
+@client.event
+async def on_disconnect():
+    delete_health_file()
+    logging.info("WiseBot is disconnected")
 
-async def listen_for_thread_messages(thread: interactions.Channel, whenToStopListening: datetime.datetime, startFrom: interactions.Message, userPrompt: str):
-    currentMessages = 2
-    while (datetime.datetime.now() < whenToStopListening):
-        history = thread.history(reverse=True, start_at=startFrom)
-        logging.info(f'Checking if thread {thread.id} has new messages')
-        messageList = await history.flatten()
-        if (len(messageList) > currentMessages):
-            logging.info('Detected new message, building message history')
-            currentMessages = len(messageList) + 1
-            whenToStopListening = datetime.datetime.now() + datetime.timedelta(minutes=10)
-            gptMessageDict = []
-            gptMessageDict.append(CHAT_SYSTEM_MESSAGE)
-            gptMessageDict.append({"role": "user", "content": userPrompt})
-            gptMessageDict.append({"role": "assistant", "content": startFrom.content})
-            for message in messageList:
-                if len(message.content) > 1 and (message.type == interactions.MessageType.DEFAULT):
-                    if (message.author.bot):
-                        gptMessageDict.append({"role": "assistant", "content": message.content})
-                    else:
-                        gptMessageDict.append({"role": "user", "content": f'{message.author.username}:{message.content}'})
-            logging.info(f'Built message history: {gptMessageDict}')
-            try:
-                response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=gptMessageDict
-                )
-                logging.info(f'Got response: {response}')
-                await thread.send(content=response['choices'][0]['message']['content'])
-            except Exception as e:
-                logging.exception(f'Exception while replying to thread {thread.id}')
-                await thread.send(content="Sorry something went wrong, please try again")
-        time.sleep(2)
-    await thread.archive()
+@client.tree.command(name="seek_wisdom", description="Ask WiseBot for wisdom")
+async def seek_wisdom(interaction: discord.Interaction, prompt: str):
+    logging.info(f'Received command to seek wisdom from {interaction.user}')
+    message_history = [
+            CHAT_SYSTEM_MESSAGE,
+            {"role": "user", "content": f'{interaction.user.display_name}:{prompt}'}
+        ]
+    try:
+        logging.info(f'Generating wisdom with prompt: {prompt}')
+        await interaction.response.defer(thinking=True)
+        responseText = generate_wisdom(message_history)
+        logging.info(f'Returning wisdom to user: {responseText}')
+        # If prompt is longer than 99 characters, we need to truncate it to fit in the thread name
+        threadName = prompt
+        if (len(threadName) > 99):
+            threadName = threadName[:96] + '...'
+        await interaction.followup.send(content=responseText)
+        response = await interaction.original_response()
+        thread = await response.create_thread(name=threadName, auto_archive_duration=60)
+    except Exception as e:
+        logging.error(f'Exception occurred while generating wisdom for user {interaction.user.display_name}', exc_info=True)
+        await interaction.followup.send('Sorry, I could not complete your request. Please try again.')
+    await listen_for_thread_messages(thread, message_history)
+    
+def generate_wisdom(message_history):
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=message_history
+    )
+    logging.info(f'Got response: {response}')
+    return response['choices'][0]['message']['content']
+
+async def listen_for_thread_messages(thread: discord.Thread, message_history: list):
+    logging.info(f'Adding thread {thread.id} to Redis')
+    redis.set(str(thread.id), json.dumps(message_history))
+
+@client.event
+async def on_message(message: discord.Message):
+    history = redis.get(str(message.channel.id))
+    if history is not None:
+        logging.info(f'New message in thread {message.channel.id}, adding to history')
+        historyList = json.loads(history)
+        if message.author == client.user:
+            logging.info(f'Message from WiseBot, ignoring')
+            historyList.append({"role": "assistant", "content": message.content})
+            return
+        historyList.append({"role": "user", "content": f'{message.author.display_name}:{message.content}'})
+        redis.set(str(message.channel.id), json.dumps(historyList))
+        logging.info(f'Generating wisdom with prompt: {message.content}')
+        response = generate_wisdom(historyList)
+        await message.channel.send(content=response)
 
 def create_health_file():
     with open('connected', 'w'):
@@ -127,6 +92,8 @@ def create_health_file():
 
 # Function to delete the health file
 def delete_health_file():
-    os.remove('connected')
+    # Make sure the file exists
+    if os.path.exists('connected'):
+        os.remove('connected')
 
-bot.start()
+client.run(token=os.getenv("DISCORD_SECRET"), log_handler=logging.StreamHandler(), log_level=logging.INFO)
