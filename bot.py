@@ -41,21 +41,21 @@ async def seek_wisdom(interaction: discord.Interaction, prompt: str):
             CHAT_SYSTEM_MESSAGE,
             {"role": "user", "content": f'{interaction.user.display_name}:{prompt}'}
         ]
+    responseText = "Sorry, something went wrong."
     try:
         logging.info(f'Generating wisdom with prompt: {prompt}')
         await interaction.response.defer(thinking=True)
         responseText = generate_wisdom(message_history)
-        logging.info(f'Returning wisdom to user: {responseText}')
-        # If prompt is longer than 99 characters, we need to truncate it to fit in the thread name
-        threadName = prompt
-        if (len(threadName) > 99):
-            threadName = threadName[:96] + '...'
-        await interaction.followup.send(content=responseText)
-        response = await interaction.original_response()
-        thread = await response.create_thread(name=threadName, auto_archive_duration=60)
     except Exception as e:
         logging.error(f'Exception occurred while generating wisdom for user {interaction.user.display_name}', exc_info=True)
-        await interaction.followup.send('Sorry, I could not complete your request. Please try again.')
+    logging.info(f'Returning wisdom to user: {responseText}')
+    # If prompt is longer than 99 characters, we need to truncate it to fit in the thread name
+    threadName = prompt
+    if (len(threadName) > 99):
+        threadName = threadName[:96] + '...'
+    await interaction.followup.send(content=responseText)
+    response = await interaction.original_response()
+    thread = await response.create_thread(name=threadName, auto_archive_duration=60)
     await listen_for_thread_messages(thread, message_history)
     
 def generate_wisdom(message_history):
