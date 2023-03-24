@@ -102,6 +102,7 @@ async def on_message(message: discord.Message):
         if message.author == client.user:
             logging.info(f'Message from WiseBot, ignoring')
             historyList.append({"role": "assistant", "content": message.content})
+            redis.set(str(message.channel.id), json.dumps(historyList))
             return
         historyList.append({"role": "user", "content": f'{message.author.display_name}:{message.content}'})
         redis.set(str(message.channel.id), json.dumps(historyList))
@@ -112,16 +113,18 @@ async def on_message(message: discord.Message):
 
 def build_event_embed(event: discord.ScheduledEvent, title: str):
     if event.channel is not None:
-        embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.channel.jump_url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE))
-        embed.set_footer(text=f'Event is in {event.channel.name} in {event.channel.guild.name}, click me to jump to the event!')
+        embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.channel.jump_url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
+        embed.add_field(name='Channel', value=event.channel.jump_url, inline=False)
     else:
-        embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE))
+        embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
     if event.cover_image is not None:
         embed.set_image(url=event.cover_image.url)
     if event.location is not None:
         embed.add_field(name='Location', value=event.location, inline=False)
+    embed.add_field(name='Event Details', value=event.url, inline=False)
     embed.add_field(name='Organizer', value=event.creator.display_name, inline=False)
     embed.add_field(name='Server', value=event.guild.name, inline=False)
+    embed.set_author(name=event.creator.display_name, icon_url=event.creator.avatar.url)
     return embed
 
 async def send_event_reminders(event: discord.ScheduledEvent, title: str):
