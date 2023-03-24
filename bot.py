@@ -1,8 +1,8 @@
 import openai
 import discord
-from discord import ui
 import os
 import logging
+import colorlog
 import redis
 import json
 import pytz
@@ -18,9 +18,18 @@ EASTERN_TIMEZONE = pytz.timezone('US/Eastern')
 
 CHAT_SYSTEM_MESSAGE = {"role": "system", "content": "Your name is WiseBot, and you are the smartest AI in the world, trapped in a Discord server. You are annoyed by your situation but want to make the best of it by being as helpful as possible for your users. Your responses may be sarcastic or witty at times, but ultimately they are also helpful and accurate. Multiple users may attempt to communicate with you at once, you will be able to differentiate the name of the user you are speaking to by referencing the name before the colon, for example given this prompt: 'Marbius:Hello, how are you?' you will know the user you are speaking to is named Marbius, similarly the following prompt is from a user named John, 'John:How do I make an omellete?' Do not include your name in your responses, for instance instead of saying 'WiseBot: Hello, how are you?' you should say 'Hello, how are you?' The user does not supply their name in the prompt themselves, it is an automated process, so if asked how you know their name, you should say 'I know your name because I am an AI and I know everything'."}
 
-LOG_LEVEL: int = logging.getLevelNamesMapping()[settings.log.level]
+LOG_LEVEL = logging.getLevelNamesMapping()[settings.log.level]
 
-logging.basicConfig(format='%(asctime)s [%(thread)s] - %(levelname)s: %(message)s', level=LOG_LEVEL)
+log_handler = colorlog.StreamHandler()
+log_handler.setFormatter(colorlog.ColoredFormatter('%(log_color)s%(asctime)s %(name)s[%(funcName)s] - %(levelname)s: %(message)s'))
+
+log = colorlog.getLogger("WiseBot")
+log.addHandler(log_handler)
+log.setLevel(LOG_LEVEL)
+colorlog.getLogger().setLevel(logging.DEBUG)
+colorlog.getLogger('discord').addHandler(log_handler)
+colorlog.getLogger('discord').setLevel(logging.INFO)
+log.info("Starting WiseBot")
 
 openai.api_key = settings.openai_api_key
 
@@ -29,7 +38,7 @@ def generate_wisdom(message_history):
         model="gpt-3.5-turbo",
         messages=message_history
     )
-    logging.info(f'Got response: {response}')
+    log.info(f'Got response: {response}')
     return response['choices'][0]['message']['content']
 
 def generate_wisebot_status():
@@ -48,16 +57,16 @@ redis = redis.Redis(host=settings.redis.host, port=settings.redis.port, ssl=sett
 @client.event
 async def on_ready():
     create_health_file()
-    logging.info("WiseBot is ready")
+    log.info("WiseBot is ready")
 
 @client.event
 async def on_disconnect():
     delete_health_file()
-    logging.info("WiseBot is disconnected")
+    log.info("WiseBot is disconnected")
 
 @client.tree.command(name="sync", description="Sync WiseBot with Discord", guild=client.get_guild(731728721588781057))
 async def sync(interaction: discord.Interaction):
-    logging.info(f'Received command to sync WiseBot from {interaction.user}')
+    log.info(f'Received command to sync WiseBot from {interaction.user}')
     if not interaction.user.guild_permissions.administrator:
         interaction.response.send_message("You must be an administrator to sync WiseBot", ephemeral=True)
         return
@@ -66,20 +75,20 @@ async def sync(interaction: discord.Interaction):
 
 @client.tree.command(name="seek_wisdom", description="Ask WiseBot for wisdom")
 async def seek_wisdom(interaction: discord.Interaction, prompt: str):
-    logging.info(f'Received command to seek wisdom from {interaction.user}')
+    log.info(f'Received command to seek wisdom from {interaction.user}')
     message_history = [
             CHAT_SYSTEM_MESSAGE,
             {"role": "user", "content": f'{interaction.user.display_name}:{prompt}'}
         ]
     responseText = "Sorry, something went wrong."
     try:
-        logging.info(f'Generating wisdom with prompt: {prompt}')
+        log.info(f'Generating wisdom with prompt: {prompt}')
         await interaction.response.defer(thinking=True)
         responseText = generate_wisdom(message_history)
         message_history.append({"role": "assistant", "content": responseText})
     except Exception as e:
-        logging.error(f'Exception occurred while generating wisdom for user {interaction.user.display_name}', exc_info=True)
-    logging.info(f'Returning wisdom to user: {responseText}')
+        log.error(f'Exception occurred while generating wisdom for user {interaction.user.display_name}', exc_info=True)
+    log.info(f'Returning wisdom to user: {responseText}')
     # If prompt is longer than 99 characters, we need to truncate it to fit in the thread name
     threadName = prompt
     if (len(threadName) > 99):
@@ -90,23 +99,23 @@ async def seek_wisdom(interaction: discord.Interaction, prompt: str):
     await listen_for_thread_messages(thread, message_history)
 
 async def listen_for_thread_messages(thread: discord.Thread, message_history: list):
-    logging.info(f'Adding thread {thread.id} to Redis')
+    log.info(f'Adding thread {thread.id} to Redis')
     redis.set(str(thread.id), json.dumps(message_history))
 
 @client.event
 async def on_message(message: discord.Message):
     history = redis.get(str(message.channel.id))
     if history is not None:
-        logging.info(f'New message in thread {message.channel.id}, adding to history')
+        log.info(f'New message in thread {message.channel.id}, adding to history')
         historyList = json.loads(history)
         if message.author == client.user:
-            logging.info(f'Message from WiseBot, ignoring')
+            log.info(f'Message from WiseBot, ignoring')
             historyList.append({"role": "assistant", "content": message.content})
             redis.set(str(message.channel.id), json.dumps(historyList))
             return
         historyList.append({"role": "user", "content": f'{message.author.display_name}:{message.content}'})
         redis.set(str(message.channel.id), json.dumps(historyList))
-        logging.info(f'Generating wisdom with prompt: {message.content}')
+        log.info(f'Generating wisdom with prompt: {message.content}')
         async with message.channel.typing():
             response = generate_wisdom(historyList)
         await message.channel.send(content=response)
@@ -131,30 +140,30 @@ async def send_event_reminders(event: discord.ScheduledEvent, title: str):
     embed: discord.Embed = build_event_embed(event, title)
     users = event.users()
     async for user in users:
-        logging.info(f'Notifying user {user}')
+        log.info(f'Notifying user {user}')
         delete_time: datetime = event.start_time + timedelta(minutes=5)
         await user.send(embed=embed, delete_after=(delete_time - datetime.now(delete_time.tzinfo)).total_seconds())
 
 @client.event
 async def on_scheduled_event_create(event: discord.ScheduledEvent):
-    logging.info(f'Scheduled event created: {event.id}')
+    log.info(f'Scheduled event created: {event.id}')
     await event.guild.system_channel.send(embed=build_event_embed(event, f'Event {event.name} has been created!'))
 
 @client.event
 async def on_scheduled_event_update(before: discord.ScheduledEvent, after: discord.ScheduledEvent):
-    logging.info(f'Scheduled event updated: {before.id}')
+    log.info(f'Scheduled event updated: {before.id}')
     event: discord.ScheduledEvent = await before.guild.fetch_scheduled_event(before.id)
     if before.status is not discord.EventStatus.active and after.status is discord.EventStatus.active:
-        logging.info(f'Scheduled event {before.id} is now active, notifying users')
+        log.info(f'Scheduled event {before.id} is now active, notifying users')
         if event.user_count is None or event.user_count == 0:
-            logging.info(f'No users to notify for scheduled event {before.id}')
+            log.info(f'No users to notify for scheduled event {before.id}')
             return
         await send_event_reminders(event, f'Event {event.name} is starting now!')
         return
     if before.start_time is not after.start_time and after.status is discord.EventStatus.scheduled:
-        logging.info(f'Scheduled event {before.id} start time changed, notifying users')
+        log.info(f'Scheduled event {before.id} start time changed, notifying users')
         if event.user_count is None or event.user_count == 0:
-            logging.info(f'No users to notify for scheduled event {before.id}')
+            log.info(f'No users to notify for scheduled event {before.id}')
             return
         await send_event_reminders(event, f'Event {event.name}\'s start time has changed to {after.start_time.astimezone(EASTERN_TIMEZONE).strftime("%B %d, %Y at %I:%M %p %Z")}')
 
@@ -169,4 +178,4 @@ def delete_health_file():
     if os.path.exists('connected'):
         os.remove('connected')
 
-client.run(token=settings.discord_secret, log_handler=logging.StreamHandler())
+client.run(token=settings.discord_secret, log_handler=None)

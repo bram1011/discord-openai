@@ -3,8 +3,10 @@ aiosignal==1.3.1
 async-timeout==4.0.2
 attrs==22.2.0
 certifi==2022.12.7
+cffi==1.15.1
 charset-normalizer==2.1.1
 click==8.1.3
+colorlog==6.7.0
 crontab==1.0.0
 discord==2.2.2
 discord.py==2.2.2
@@ -18,12 +20,14 @@ keyboard==0.13.5
 MarkupSafe==2.1.2
 multidict==6.0.4
 openai==0.27.2
+pycparser==2.21
 python-dateutil==2.8.2
 python-dotenv==0.21.0
 python-worker==2.1.1
 pytz==2022.7.1
 redis==4.5.3
 requests==2.28.2
+rq==1.13.0
 six==1.16.0
 tqdm==4.64.1
 urllib3==1.26.14
