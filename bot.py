@@ -1,5 +1,6 @@
 import openai
 import discord
+from discord import ui
 import os
 import logging
 import colorlog
@@ -9,10 +10,58 @@ import pytz
 from datetime import datetime, timedelta
 from config import settings
 
+TEST_GUILD = discord.Object(731728721588781057)
+
 class WiseBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
         super().__init__(intents=intents, options=options)
         self.tree = discord.app_commands.CommandTree(self)
+    async def setup_hook(self):
+        self.tree.copy_global_to(guild=TEST_GUILD)
+        await self.tree.sync(guild=TEST_GUILD)
+class UserInvitesDropdown(ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="Select users to invite", min_values=1, max_values=25)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+class EventDropdown(ui.Select):
+    def __init__(self, options: list[discord.SelectOption]):
+        super().__init__(placeholder="Select an event", min_values=1, max_values=1, options=options)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+class EventInviteView(ui.View):
+    def __init__(self, event_select: EventDropdown, user_select: UserInvitesDropdown, user: discord.User, initial_interaction: discord.Interaction, events: list[discord.ScheduledEvent]):
+        super().__init__(timeout=None)
+        self.user = user
+        self.initial_interaction = initial_interaction
+        self.events = events
+        self.add_item(event_select)
+        self.add_item(user_select)
+        self.add_item(SubmitInvitesButton(event_select, user_select, self))
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user != self.user:
+            await interaction.response.send_message(f'Only {self.user.display_name} can use this view', ephemeral=True)
+        return interaction.user == self.user
+    
+class SubmitInvitesButton(ui.Button):
+    def __init__(self, event_select: EventDropdown, user_select: UserInvitesDropdown, invite_view: EventInviteView):
+        super().__init__(label="Submit", style=discord.ButtonStyle.primary)
+        self.event_select = event_select
+        self.user_select = user_select
+        self.invite_view = invite_view
+    
+    async def callback(self, interaction: discord.Interaction):
+        self.invite_view.stop()
+        await interaction.response.send_message(f'Sending invites to {len(self.user_select.values)} users!', ephemeral=True)
+        await self.invite_view.initial_interaction.delete_original_response()
+        event: discord.ScheduledEvent = None
+        for guild_event in self.invite_view.events:
+            if guild_event.id == int(self.event_select.values[0]):
+                event = guild_event
+        for user in self.user_select.values:
+            log.info(f'Inviting {user} to {event}')
+            await user.send(embed=build_event_embed(event, f'{interaction.user.display_name} has invited you to {event.name}!', event.url))
 
 EASTERN_TIMEZONE = pytz.timezone('US/Eastern')
 
@@ -64,7 +113,7 @@ async def on_disconnect():
     delete_health_file()
     log.info("WiseBot is disconnected")
 
-@client.tree.command(name="sync", description="Sync WiseBot with Discord", guild=client.get_guild(731728721588781057))
+@client.tree.command(name="sync", description="Sync WiseBot with Discord")
 async def sync(interaction: discord.Interaction):
     log.info(f'Received command to sync WiseBot from {interaction.user}')
     if not interaction.user.guild_permissions.administrator:
@@ -98,6 +147,19 @@ async def seek_wisdom(interaction: discord.Interaction, prompt: str):
     thread = await response.create_thread(name=threadName, auto_archive_duration=60)
     await listen_for_thread_messages(thread, message_history)
 
+@client.tree.command(name="invite", description="Invite Users to an Event")
+async def invite(interaction: discord.Interaction):
+    log.info(f'Received command to invite a user from {interaction.user}')
+    event_select: list[discord.SelectOption] = []
+    events = interaction.guild.scheduled_events
+    if len(events) == 0:
+        await interaction.followup.send(content="No events found", ephemeral=True)
+        return
+    for event in events:
+        if event.status is discord.EventStatus.scheduled:
+            event_select.append(discord.SelectOption(label=event.name, description=event.description, value=event.id))
+    await interaction.response.send_message(content="Select an event and users to invite", view=EventInviteView(EventDropdown(event_select), UserInvitesDropdown(), interaction.user, interaction, events), ephemeral=True)
+
 async def listen_for_thread_messages(thread: discord.Thread, message_history: list):
     log.info(f'Adding thread {thread.id} to Redis')
     redis.set(str(thread.id), json.dumps(message_history))
@@ -120,9 +182,12 @@ async def on_message(message: discord.Message):
             response = generate_wisdom(historyList)
         await message.channel.send(content=response)
 
-def build_event_embed(event: discord.ScheduledEvent, title: str):
+def build_event_embed(event: discord.ScheduledEvent, title: str, url: str = None):
+    if url is not None:
+        embed: discord.Embed = discord.Embed(title=title, description=event.description, url=url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
     if event.channel is not None:
-        embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.channel.jump_url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
+        if embed is None:
+            embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.channel.jump_url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
         embed.add_field(name='Channel', value=event.channel.jump_url, inline=False)
     else:
         embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
