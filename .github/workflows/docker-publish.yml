@@ -24,3 +24,8 @@ jobs:
         context: .
         push: true
         tags: docker.bramhampton.ml/discord-openai:latest
+    - name: Deploy Stage
+      uses: fjogeleit/http-request-action@v1
+      with:
+        url: 'https://portainer.bramhampton.ml/api/webhooks/7d5b0afd-8261-48b9-9e58-5b49cd271067'
+        method: 'POST'
