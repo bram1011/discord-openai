@@ -129,7 +129,6 @@ async def sync(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         interaction.response.send_message("You must be an administrator to sync WiseBot", ephemeral=True)
         return
-    await client.tree.clear_commands(guild=None)
     await client.tree.sync(guild=None)
     await interaction.response.send_message("Synced WiseBot with Discord", ephemeral=True)
 
