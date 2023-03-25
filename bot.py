@@ -17,8 +17,11 @@ class WiseBot(discord.Client):
         super().__init__(intents=intents, options=options)
         self.tree = discord.app_commands.CommandTree(self)
     async def setup_hook(self):
+        self.tree.clear_commands(guild=TEST_GUILD)
+        await self.tree.sync(guild=TEST_GUILD)
         self.tree.copy_global_to(guild=TEST_GUILD)
         await self.tree.sync(guild=TEST_GUILD)
+
 class UserInvitesDropdown(ui.UserSelect):
     def __init__(self):
         super().__init__(placeholder="Select users to invite", min_values=1, max_values=25)
@@ -56,12 +59,16 @@ class SubmitInvitesButton(ui.Button):
         await interaction.response.send_message(f'Sending invites to {len(self.user_select.values)} users!', ephemeral=True)
         await self.invite_view.initial_interaction.delete_original_response()
         event: discord.ScheduledEvent = None
-        for guild_event in self.invite_view.events:
-            if guild_event.id == int(self.event_select.values[0]):
-                event = guild_event
-        for user in self.user_select.values:
-            log.info(f'Inviting {user} to {event}')
-            await user.send(embed=build_event_embed(event, f'{interaction.user.display_name} has invited you to {event.name}!', event.url))
+        try:
+            for guild_event in self.invite_view.events:
+                if guild_event.id == int(self.event_select.values[0]):
+                    event = guild_event
+            for user in self.user_select.values:
+                log.info(f'Inviting {user} to {event}')
+                await user.send(embed=build_event_embed(event, f'{interaction.user.display_name} has invited you to {event.name}!'))
+        except Exception as e:
+            log.exception('Could not send invites for event {event.id}')
+            await interaction.followup.send(f'Could not send invites for {event.name} due to error', ephemeral=True)
 
 EASTERN_TIMEZONE = pytz.timezone('US/Eastern')
 
@@ -113,13 +120,13 @@ async def on_disconnect():
     delete_health_file()
     log.info("WiseBot is disconnected")
 
-@client.tree.command(name="sync", description="Sync WiseBot with Discord")
+@client.tree.command(name="sync", description="Sync WiseBot with Discord GLOBALLY")
 async def sync(interaction: discord.Interaction):
     log.info(f'Received command to sync WiseBot from {interaction.user}')
     if not interaction.user.guild_permissions.administrator:
         interaction.response.send_message("You must be an administrator to sync WiseBot", ephemeral=True)
         return
-    await client.tree.sync()
+    await client.tree.sync(guild=None)
     await interaction.response.send_message("Synced WiseBot with Discord", ephemeral=True)
 
 @client.tree.command(name="seek_wisdom", description="Ask WiseBot for wisdom")
@@ -182,26 +189,26 @@ async def on_message(message: discord.Message):
             response = generate_wisdom(historyList)
         await message.channel.send(content=response)
 
-def build_event_embed(event: discord.ScheduledEvent, title: str, url: str = None):
-    if url is not None:
-        embed: discord.Embed = discord.Embed(title=title, description=event.description, url=url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
+def build_event_embed(event: discord.ScheduledEvent, title: str):
+    embed: discord.Embed = discord.Embed(title=title, description=event.description, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
     if event.channel is not None:
-        if embed is None:
-            embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.channel.jump_url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
         embed.add_field(name='Channel', value=event.channel.jump_url, inline=False)
-    else:
-        embed: discord.Embed = discord.Embed(title=title, description=event.description, url=event.url, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
     if event.cover_image is not None:
         embed.set_image(url=event.cover_image.url)
     if event.location is not None:
         embed.add_field(name='Location', value=event.location, inline=False)
+    if event.description is not None and len(event.description) > 0:
+        embed.add_field(name='Description', value=event.description, inline=False)
+    embed.add_field(name='Attendees', value=event.user_count, inline=False)
     embed.add_field(name='Event Details', value=event.url, inline=False)
-    embed.add_field(name='Organizer', value=event.creator.display_name, inline=False)
     embed.add_field(name='Server', value=event.guild.name, inline=False)
     embed.set_author(name=event.creator.display_name, icon_url=event.creator.avatar.url)
     return embed
 
-async def send_event_reminders(event: discord.ScheduledEvent, title: str):
+async def notify_event_subscribers(event: discord.ScheduledEvent, title: str):
+    if event.user_count is None or event.user_count == 0:
+        log.info(f'No users to notify for scheduled event {event.id}')
+        return
     embed: discord.Embed = build_event_embed(event, title)
     users = event.users()
     async for user in users:
@@ -220,18 +227,14 @@ async def on_scheduled_event_update(before: discord.ScheduledEvent, after: disco
     event: discord.ScheduledEvent = await before.guild.fetch_scheduled_event(before.id)
     if before.status is not discord.EventStatus.active and after.status is discord.EventStatus.active:
         log.info(f'Scheduled event {before.id} is now active, notifying users')
-        if event.user_count is None or event.user_count == 0:
-            log.info(f'No users to notify for scheduled event {before.id}')
-            return
-        await send_event_reminders(event, f'Event {event.name} is starting now!')
+        await notify_event_subscribers(event, f'Event {event.name} is starting now!')
         return
     if before.start_time is not after.start_time and after.status is discord.EventStatus.scheduled:
         log.info(f'Scheduled event {before.id} start time changed, notifying users')
-        if event.user_count is None or event.user_count == 0:
-            log.info(f'No users to notify for scheduled event {before.id}')
-            return
-        await send_event_reminders(event, f'Event {event.name}\'s start time has changed to {after.start_time.astimezone(EASTERN_TIMEZONE).strftime("%B %d, %Y at %I:%M %p %Z")}')
-
+        await notify_event_subscribers(event, f'Event {event.name}\'s start time has changed to {after.start_time.astimezone(EASTERN_TIMEZONE).strftime("%B %d, %Y at %I:%M %p %Z")}')
+    if (before.location is not after.location) or (before.channel is not after.channel):
+        log.info(f'Scheduled event {before.id} location or channel changed, notifying users')
+        await notify_event_subscribers(event, f'Event {event.name}\'s location or channel has changed')
 
 def create_health_file():
     with open('connected', 'w'):
