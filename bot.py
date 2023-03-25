@@ -4,22 +4,17 @@ from discord import ui
 import os
 import logging
 import colorlog
-import redis
-import json
 import pytz
 from datetime import datetime, timedelta
 from config import settings
 
 TEST_GUILD = discord.Object(731728721588781057)
 
-class WiseBot(discord.Client):
+class WiseBot(discord.AutoShardedClient):
     def __init__(self, *, intents: discord.Intents, **options):
         super().__init__(intents=intents, options=options)
         self.tree = discord.app_commands.CommandTree(self)
     async def setup_hook(self):
-        self.tree.clear_commands(guild=TEST_GUILD)
-        await self.tree.sync(guild=TEST_GUILD)
-        self.tree.copy_global_to(guild=TEST_GUILD)
         await self.tree.sync(guild=TEST_GUILD)
 
 class UserInvitesDropdown(ui.UserSelect):
@@ -106,9 +101,7 @@ def generate_wisebot_status():
     return status
 
 discordPyIntents = discord.Intents.all()
-client = WiseBot(intents=discordPyIntents, heartbeat_timeout=60, shard_count=settings.bot.shards)
-
-redis = redis.Redis(host=settings.redis.host, port=settings.redis.port, ssl=settings.redis.ssl)
+client = WiseBot(intents=discordPyIntents, heartbeat_timeout=30, shard_count=settings.bot.shards)
 
 @client.event
 async def on_ready():
@@ -119,6 +112,16 @@ async def on_ready():
 async def on_disconnect():
     delete_health_file()
     log.info("WiseBot is disconnected")
+
+@client.tree.command(name="status", description="Get WiseBot's status", guild=TEST_GUILD)
+async def status(interaction: discord.Interaction):
+    log.info(f'Received command to get status from {interaction.user}')
+    status_embed: discord.Embed = discord.Embed(title="WiseBot Status")
+    status_embed.add_field(name="Latency", value=client.latencies, inline=False)\
+        .add_field(name="Guilds", value=client.guilds, inline=False)\
+            .add_field(name="Gateway", value=client.ws, inline=False)\
+                .add_field(name="Shards", value=client.shards, inline=False)
+    await interaction.response.send_message(embed=status_embed, ephemeral=True)
 
 @client.tree.command(name="sync", description="Sync WiseBot with Discord GLOBALLY")
 async def sync(interaction: discord.Interaction):
@@ -141,7 +144,6 @@ async def seek_wisdom(interaction: discord.Interaction, prompt: str):
         log.info(f'Generating wisdom with prompt: {prompt}')
         await interaction.response.defer(thinking=True)
         responseText = generate_wisdom(message_history)
-        message_history.append({"role": "assistant", "content": responseText})
     except Exception as e:
         log.error(f'Exception occurred while generating wisdom for user {interaction.user.display_name}', exc_info=True)
     log.info(f'Returning wisdom to user: {responseText}')
@@ -151,8 +153,7 @@ async def seek_wisdom(interaction: discord.Interaction, prompt: str):
         threadName = threadName[:96] + '...'
     await interaction.followup.send(content=responseText)
     response = await interaction.original_response()
-    thread = await response.create_thread(name=threadName, auto_archive_duration=60)
-    await listen_for_thread_messages(thread, message_history)
+    await response.create_thread(name=threadName, auto_archive_duration=60)
 
 @client.tree.command(name="invite", description="Invite Users to an Event")
 async def invite(interaction: discord.Interaction):
@@ -165,28 +166,28 @@ async def invite(interaction: discord.Interaction):
     for event in events:
         if event.status is discord.EventStatus.scheduled:
             event_select.append(discord.SelectOption(label=event.name, description=event.description, value=event.id))
-    await interaction.response.send_message(content="Select an event and users to invite", view=EventInviteView(EventDropdown(event_select), UserInvitesDropdown(), interaction.user, interaction, events), ephemeral=True)
-
-async def listen_for_thread_messages(thread: discord.Thread, message_history: list):
-    log.info(f'Adding thread {thread.id} to Redis')
-    redis.set(str(thread.id), json.dumps(message_history))
+    await interaction.response.send_message(content="Select an event and users to invite", \
+                                            view=EventInviteView(EventDropdown(event_select), UserInvitesDropdown(), interaction.user, interaction, events), ephemeral=True)
 
 @client.event
 async def on_message(message: discord.Message):
-    history = redis.get(str(message.channel.id))
-    if history is not None:
-        log.info(f'New message in thread {message.channel.id}, adding to history')
-        historyList = json.loads(history)
+    if isinstance(message.channel, discord.Thread) and message.channel.owner_id == client.user.id:
+        log.info(f'New message in bot\'s thread {message.channel.id}')
         if message.author == client.user:
             log.info(f'Message from WiseBot, ignoring')
-            historyList.append({"role": "assistant", "content": message.content})
-            redis.set(str(message.channel.id), json.dumps(historyList))
             return
-        historyList.append({"role": "user", "content": f'{message.author.display_name}:{message.content}'})
-        redis.set(str(message.channel.id), json.dumps(historyList))
-        log.info(f'Generating wisdom with prompt: {message.content}')
+        log.debug(f'Getting history for thread {message.channel.id}')
+        gpt_history: list[dict] = []
+        gpt_history.append(CHAT_SYSTEM_MESSAGE)
+        gpt_history.append({"role": "user", "content": f'{message.author.display_name}:{message.channel.name}'})
         async with message.channel.typing():
-            response = generate_wisdom(historyList)
+            async for message in message.channel.history(limit=100, oldest_first=True):
+                log.debug(f'Adding message {message.id} to history')
+                if message.author == client.user:
+                    gpt_history.append({"role": "assistant", "content": message.content})
+                else:
+                    gpt_history.append({"role": "user", "content": f'{message.author.display_name}:{message.content}'})
+            response = generate_wisdom(gpt_history)
         await message.channel.send(content=response)
 
 def build_event_embed(event: discord.ScheduledEvent, title: str):
