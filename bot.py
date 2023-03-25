@@ -124,15 +124,13 @@ async def status(interaction: discord.Interaction):
     await interaction.response.send_message(embed=status_embed, ephemeral=True)
 
 @client.tree.command(name="sync", description="Sync WiseBot's commands", guild=TEST_GUILD)
-async def sync(interaction: discord.Interaction, guild_id = None):
+async def sync(interaction: discord.Interaction):
     log.info(f'Received command to sync WiseBot from {interaction.user}')
     if not interaction.user.guild_permissions.administrator:
         interaction.response.send_message("You must be an administrator to sync WiseBot", ephemeral=True)
         return
-    guild = client.get_guild(guild_id)
-    await client.tree.clear_commands(guild=guild)
-    await client.tree.sync(guild=guild)
-    await client.tree.copy_global_to(guild=guild)
+    await client.tree.clear_commands(guild=None)
+    await client.tree.sync(guild=None)
     await interaction.response.send_message("Synced WiseBot with Discord", ephemeral=True)
 
 @client.tree.command(name="seek_wisdom", description="Ask WiseBot for wisdom")
