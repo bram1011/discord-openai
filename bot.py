@@ -7,15 +7,23 @@ import colorlog
 import pytz
 from datetime import datetime, timedelta
 from config import settings
+from pytube import YouTube, Playlist
+from zipfile import ZipFile
+import shutil
+from filesplit.split import Split
+import math
+import requests
 
 TEST_GUILD = discord.Object(731728721588781057)
 
 class WiseBot(discord.AutoShardedClient):
-    def __init__(self, *, intents: discord.Intents, **options):
-        super().__init__(intents=intents, options=options)
+    def __init__(self, *, intents: discord.Intents):
+        super().__init__(intents=intents, shard_count=settings.bot.shards, heartbeat_timeout=60)
         self.tree = discord.app_commands.CommandTree(self)
     async def setup_hook(self):
         await self.tree.sync(guild=TEST_GUILD)
+        await self.tree.sync(guild=None)
+        self.tree.copy_global_to(guild=TEST_GUILD)
 
 class UserInvitesDropdown(ui.UserSelect):
     def __init__(self):
@@ -101,7 +109,7 @@ def generate_wisebot_status():
     return status
 
 discordPyIntents = discord.Intents.all()
-client = WiseBot(intents=discordPyIntents, heartbeat_timeout=30, shard_count=settings.bot.shards)
+client = WiseBot(intents=discordPyIntents)
 
 @client.event
 async def on_ready():
@@ -168,6 +176,44 @@ async def invite(interaction: discord.Interaction):
             event_select.append(discord.SelectOption(label=event.name, description=event.description, value=event.id))
     await interaction.response.send_message(content="Select an event and users to invite", \
                                             view=EventInviteView(EventDropdown(event_select), UserInvitesDropdown(), interaction.user, interaction, events), ephemeral=True)
+
+@client.tree.command(name="download_yt_audio", description="Download YouTube Audio from comma-separated URLs or a Playlist")
+async def download_yt_audio(interaction: discord.Interaction, urls: str = None, playlist: str = None):
+    log.info(f'Received command to download YouTube audio from {interaction.user}')
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    output_dir = f'./audio-files/{interaction.id}'
+    zip_file = f'./audio-files/{interaction.id}.zip'
+    if playlist is not None:
+        log.info(f'Downloading YouTube audio from playlist {playlist}')
+        url_list = Playlist(playlist).video_urls
+    elif urls is not None:
+        url_list = urls.split(',')
+    else:
+        await interaction.followup.send(content="No URLs or playlist provided", ephemeral=True)
+        return
+    failures = []
+    for url in url_list:
+        try:
+            log.info(f'Downloading YouTube audio from {url}')
+            await interaction.followup.send(content=f'Downloading YouTube audio from {url}', ephemeral=True, silent=True)
+            yt = YouTube(url)
+            audio_stream = yt.streams.get_audio_only()
+            path = audio_stream.download(output_dir, max_retries=3)
+            log.info(f'Downloaded {path}')
+            with ZipFile(zip_file, 'a') as zip:
+                zip.write(path, arcname=f'{yt.title}.mp4')
+        except Exception as e:
+            log.exception(f'Exception occurred while downloading YouTube audio from {url}', exc_info=True)
+            failures.append(url)
+            continue
+    upload = requests.post('https://file.io', files={'file': open(zip_file, 'rb')}, headers={'Authorization': f'Bearer {settings.FILES_IO_KEY}'}, data={'expires': '1d', 'maxDownloads': 1, 'autoDelete': 'true'})
+    upload_response = upload.json()
+    log.debug(f'Upload response: {upload_response}')
+    await interaction.followup.send(content=f'YouTube audio downloaded from {len(url_list) - len(failures)} URLs. Failed to download from {len(failures)} URLs. Download here: {upload_response["link"]}', ephemeral=True)
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    if os.path.exists(zip_file):
+        os.remove(zip_file)
 
 @client.event
 async def on_message(message: discord.Message):
