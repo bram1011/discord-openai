@@ -12,9 +12,13 @@ from zipfile import ZipFile
 import shutil
 from filesplit.split import Split
 import math
+import urllib.parse
 import requests
+import json
 
 TEST_GUILD = discord.Object(731728721588781057)
+
+PLIK_URL = "http://192.168.0.229:7080"
 
 class WiseBot(discord.AutoShardedClient):
     def __init__(self, *, intents: discord.Intents):
@@ -182,7 +186,6 @@ async def download_yt_audio(interaction: discord.Interaction, urls: str = None, 
     log.info(f'Received command to download YouTube audio from {interaction.user}')
     await interaction.response.defer(thinking=True, ephemeral=True)
     output_dir = f'./audio-files/{interaction.id}'
-    zip_file = f'./audio-files/{interaction.id}.zip'
     if playlist is not None:
         log.info(f'Downloading YouTube audio from playlist {playlist}')
         url_list = Playlist(playlist).video_urls
@@ -192,28 +195,49 @@ async def download_yt_audio(interaction: discord.Interaction, urls: str = None, 
         await interaction.followup.send(content="No URLs or playlist provided", ephemeral=True)
         return
     failures = []
+    file_paths = []
     for url in url_list:
         try:
             log.info(f'Downloading YouTube audio from {url}')
             await interaction.followup.send(content=f'Downloading YouTube audio from {url}', ephemeral=True, silent=True)
             yt = YouTube(url)
+            filename = f'{yt.title}.mp4'
             audio_stream = yt.streams.get_audio_only()
-            path = audio_stream.download(output_dir, max_retries=3)
+            path = audio_stream.download(output_dir, max_retries=3, filename=filename)
             log.info(f'Downloaded {path}')
-            with ZipFile(zip_file, 'a') as zip:
-                zip.write(path, arcname=f'{yt.title}.mp4')
+            file_paths.append({'fileName': filename, 'path': path})
         except Exception as e:
             log.exception(f'Exception occurred while downloading YouTube audio from {url}', exc_info=True)
+            await interaction.followup.send(content=f'FAILED to download YouTube audio from {url}', ephemeral=True, silent=False)
             failures.append(url)
             continue
-    upload = requests.post('https://file.io', files={'file': open(zip_file, 'rb')}, headers={'Authorization': f'Bearer {settings.FILES_IO_KEY}'}, data={'expires': '1d', 'maxDownloads': 1, 'autoDelete': 'true'})
-    upload_response = upload.json()
-    log.debug(f'Upload response: {upload_response}')
-    await interaction.followup.send(content=f'YouTube audio downloaded from {len(url_list) - len(failures)} URLs. Failed to download from {len(failures)} URLs. Download here: {upload_response["link"]}', ephemeral=True)
+    log.info(f'Uploading {len(file_paths)} files to Plik')
+    if len(file_paths) == 0:
+        await interaction.followup.send(content=f'Failed to download YouTube audio from any URLs', ephemeral=True)
+        return
+    if len(file_paths) == 1:
+        upload_response = requests.post(PLIK_URL, files={'file': open(file_paths[0]['path'], 'rb')})
+        download_url = upload_response.text
+        await interaction.followup.send(content=f'YouTube audio downloaded from 1 URL. Failed to download from {len(failures)} URLs. Download here: {download_url}', ephemeral=True)
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+        return
+    archive_name = f'audio-files-{interaction.id}.zip'
+    archive_path = f'./audio-files/{archive_name}'
+    with ZipFile(archive_path, 'w') as zip:
+        for file_path in file_paths:
+            log.debug(f'Adding {file_path["fileName"]} to archive')
+            zip.write(file_path['path'], arcname=file_path['fileName'])
+    with open(archive_path, 'rb') as f:
+        log.debug(f'Uploading {archive_name} to Plik')
+        zip_upload_response = requests.post(PLIK_URL, files={'file': f}, stream=True)
+    if zip_upload_response.status_code != 200:
+        await interaction.followup.send(content=f'Failed to upload archive to Plik', ephemeral=True)
+        return
+    download_url = zip_upload_response.text
+    await interaction.followup.send(content=f'YouTube audio downloaded from {len(url_list) - len(failures)} URLs. Failed to download from {len(failures)} URLs. Download here: {download_url}', ephemeral=True)
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
-    if os.path.exists(zip_file):
-        os.remove(zip_file)
 
 @client.event
 async def on_message(message: discord.Message):
