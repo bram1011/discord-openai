@@ -1,6 +1,6 @@
 import openai
 import discord
-from discord import ui
+from discord import ui, app_commands
 import os
 import logging
 import colorlog
@@ -190,6 +190,7 @@ def make_safe_filename(filename: str):
     return filename
 
 @client.tree.command(name="download_yt_audio", description="Download YouTube Audio from comma-separated URLs or a Playlist")
+@app_commands.describe(urls = "Comma-separated list of YouTube URLs", playlist = "YouTube Playlist URL")
 async def download_yt_audio(interaction: discord.Interaction, urls: str = None, playlist: str = None):
     log.info(f'Received command to download YouTube audio from {interaction.user}')
     await interaction.response.defer(thinking=True, ephemeral=True)
