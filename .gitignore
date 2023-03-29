@@ -2,6 +2,7 @@ bot.log
 connected
 settings.toml
 guilds/
+ddg*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
