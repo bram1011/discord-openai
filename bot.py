@@ -10,11 +10,7 @@ from config import settings
 from pytube import YouTube, Playlist
 from zipfile import ZipFile
 import shutil
-from filesplit.split import Split
-import math
-import urllib.parse
 import requests
-import json
 import re
 
 TEST_GUILD = discord.Object(731728721588781057)
