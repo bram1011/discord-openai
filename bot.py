@@ -15,6 +15,7 @@ import math
 import urllib.parse
 import requests
 import json
+import re
 
 TEST_GUILD = discord.Object(731728721588781057)
 
@@ -181,6 +182,17 @@ async def invite(interaction: discord.Interaction):
     await interaction.response.send_message(content="Select an event and users to invite", \
                                             view=EventInviteView(EventDropdown(event_select), UserInvitesDropdown(), interaction.user, interaction, events), ephemeral=True)
 
+def make_safe_filename(filename: str):
+    # Replace spaces with underscores
+    filename = filename.replace(" ", "_")
+    # Remove non-alphanumeric characters except for dots and underscores
+    filename = re.sub(r'[^\w\.\_]', '', filename)
+    # Remove leading and trailing dots and underscores
+    filename = re.sub(r'^[._]|[._]$', '', filename)
+    # Ensure filename is not empty
+    filename = filename or "unnamed"
+    return filename
+
 @client.tree.command(name="download_yt_audio", description="Download YouTube Audio from comma-separated URLs or a Playlist")
 async def download_yt_audio(interaction: discord.Interaction, urls: str = None, playlist: str = None):
     log.info(f'Received command to download YouTube audio from {interaction.user}')
@@ -201,7 +213,7 @@ async def download_yt_audio(interaction: discord.Interaction, urls: str = None, 
             log.info(f'Downloading YouTube audio from {url}')
             await interaction.followup.send(content=f'Downloading YouTube audio from {url}', ephemeral=True, silent=True)
             yt = YouTube(url)
-            filename = f'{yt.title}.mp4'
+            filename = f'{make_safe_filename(yt.title)}.mp4'
             audio_stream = yt.streams.get_audio_only()
             path = audio_stream.download(output_dir, max_retries=3, filename=filename)
             log.info(f'Downloaded {path}')
