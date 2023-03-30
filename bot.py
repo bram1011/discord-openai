@@ -261,6 +261,8 @@ async def download_yt_audio(interaction: discord.Interaction, urls: str = None, 
     await interaction.followup.send(content=f'YouTube audio downloaded from {len(url_list) - len(failures)} URLs. Failed to download from {len(failures)} URLs. Download here: {download_url}', ephemeral=True)
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
+    if os.path.exists(archive_path):
+        os.remove(archive_path)
 
 @client.event
 async def on_message(message: discord.Message):
