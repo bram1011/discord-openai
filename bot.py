@@ -115,13 +115,11 @@ client = WiseBot(intents=discordPyIntents)
 
 @client.event
 async def on_ready():
-    create_health_file()
     log.info("WiseBot is ready")
 
 @client.event
 async def on_disconnect():
-    delete_health_file()
-    log.info("WiseBot is disconnected")
+    log.warning("WiseBot is disconnected")
 
 @client.tree.command(name="status", description="Get WiseBot's status", guild=TEST_GUILD)
 async def status(interaction: discord.Interaction):
@@ -331,15 +329,5 @@ async def on_scheduled_event_update(before: discord.ScheduledEvent, after: disco
     if (before.location is not after.location) or (before.channel is not after.channel):
         log.info(f'Scheduled event {before.id} location or channel changed, notifying users')
         await notify_event_subscribers(event, f'Event {event.name}\'s location or channel has changed')
-
-def create_health_file():
-    with open('connected', 'w'):
-        pass
-
-# Function to delete the health file
-def delete_health_file():
-    # Make sure the file exists
-    if os.path.exists('connected'):
-        os.remove('connected')
 
 client.run(token=settings.discord_secret, log_handler=None)
