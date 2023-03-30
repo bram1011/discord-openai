@@ -12,6 +12,7 @@ from zipfile import ZipFile
 import shutil
 import requests
 import re
+from ffmpeg import FFmpeg
 
 TEST_GUILD = discord.Object(731728721588781057)
 
@@ -189,6 +190,18 @@ def make_safe_filename(filename: str):
     filename = filename or "unnamed"
     return filename
 
+def convert_mp4_to_ogg(input_file: str) -> str:
+    ffmpeg = (
+        FFmpeg()
+        .option("y")
+        .option("vn")
+        .input(input_file)
+        .output(f'{input_file}.ogg', acodec="libvorbis")
+    )
+    log.info(f'Converting {input_file} to OGG')
+    ffmpeg.execute()
+    return f'{input_file}.ogg'
+
 @client.tree.command(name="download_yt_audio", description="Download YouTube Audio from comma-separated URLs or a Playlist")
 @app_commands.describe(urls = "Comma-separated list of YouTube URLs", playlist = "YouTube Playlist URL")
 async def download_yt_audio(interaction: discord.Interaction, urls: str = None, playlist: str = None):
@@ -214,7 +227,8 @@ async def download_yt_audio(interaction: discord.Interaction, urls: str = None, 
             audio_stream = yt.streams.get_audio_only()
             path = audio_stream.download(output_dir, max_retries=3, filename=filename)
             log.info(f'Downloaded {path}')
-            file_paths.append({'fileName': filename, 'path': path})
+            ogg_path = convert_mp4_to_ogg(path)
+            file_paths.append({'fileName': os.path.basename(ogg_path), 'path': ogg_path})
         except Exception as e:
             log.exception(f'Exception occurred while downloading YouTube audio from {url}', exc_info=True)
             await interaction.followup.send(content=f'FAILED to download YouTube audio from {url}', ephemeral=True, silent=False)
