@@ -189,16 +189,17 @@ def make_safe_filename(filename: str):
     return filename
 
 def convert_mp4_to_ogg(input_file: str) -> str:
+    output_file = input_file.replace('.mp4', '.ogg')
+    log.info(f'Converting {input_file} to OGG')
     ffmpeg = (
         FFmpeg()
         .option("y")
         .option("vn")
-        .input(input_file)
+        .input(output_file)
         .output(f'{input_file}.ogg', acodec="libvorbis")
     )
-    log.info(f'Converting {input_file} to OGG')
     ffmpeg.execute()
-    return f'{input_file}.ogg'
+    return output_file
 
 @client.tree.command(name="download_yt_audio", description="Download YouTube Audio from comma-separated URLs or a Playlist")
 @app_commands.describe(urls = "Comma-separated list of YouTube URLs", playlist = "YouTube Playlist URL")
