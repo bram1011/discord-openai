@@ -2,7 +2,9 @@ FROM python:3
 
 WORKDIR /usr/src/discord-bot
 
-RUN apt-get update && apt-get install -y ffmpeg build-essential
+RUN apt-get update && apt-get install -y ffmpeg build-essential curl
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 COPY requirements.txt .
 
