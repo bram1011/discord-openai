@@ -195,8 +195,8 @@ def convert_mp4_to_ogg(input_file: str) -> str:
         FFmpeg()
         .option("y")
         .option("vn")
-        .input(output_file)
-        .output(f'{input_file}.ogg', acodec="libvorbis")
+        .input(input_file)
+        .output(output_file, acodec="libvorbis")
     )
     ffmpeg.execute()
     return output_file
