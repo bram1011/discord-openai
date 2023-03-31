@@ -223,10 +223,34 @@ async def help(interaction: discord.Interaction):
     help_embed.add_field(name="Commands", value="`/seek_wisdom <prompt>`: Ask WiseBot for wisdom\n`/invite`: Invite users to a scheduled event\n`/help`: Get help with WiseBot", inline=False)
     help_embed.add_field(name="Seeking Wisdom", value="When asking for wisdom, please keep your initial prompt to less than 100 characters, as WiseBot will create a new thread with the same title as your prompt. Inside this thread WiseBot will listen to followup messages and remember up to 20 of the most recent messages.")
     help_embed.add_field(name="Event Management", value="WiseBot will also listen for new scheduled events in your server and announce them to the system messages channel. If the start time is changed all subscribed users will receive a notification. Using the `/invite` command you can have WiseBot DM users a link to the event. When the event starts WiseBot will send a message to all subscribed users.")
+    help_embed.add_field(name="summarize", value="Have WiseBot summarize the contents of a website", inline=False)
     await interaction.response.send_message(embed=help_embed, ephemeral=True)
 
+@client.tree.command(description="Have WiseBot summarize the contents of a website", guild=TEST_GUILD)
+async def summarize(interaction: discord.Interaction, url: str):
+    log.info(f'Received command to summarize {url} from {interaction.user}')
+    summarize_message_content = f'Summarize the following contents of {url}: \n'
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        website_content = requests.get(url)
+        website_soup = BeautifulSoup(website_content.text, 'html.parser')
+        website_text = website_soup.body.get_text()
+        if num_tokens_in_str(website_text) > MAX_TOKENS - num_tokens_in_message_history([CHAT_SYSTEM_MESSAGE]):
+            await interaction.followup.send("Sorry, the website is too long to summarize.", ephemeral=True)
+            return
+        summarize_message_content += website_text
+        summarize_message = [
+            CHAT_SYSTEM_MESSAGE,
+            {"role": "user", "content": summarize_message_content, "name": interaction.user.display_name}
+        ]
+        response = await generate_response(summarize_message)
+        await interaction.followup.send(response, ephemeral=True)
+    except Exception as e:
+        log.exception(f'Exception occurred while summarizing {url} for user {interaction.user.display_name}')
+        await interaction.followup.send("Sorry, something went wrong.", ephemeral=True)
+
 @client.tree.command(name="seek_wisdom", description="Ask WiseBot for wisdom")
-async def seek_wisdom(interaction: discord.Interaction, prompt: str):
+async def seek_wisdom(interaction: discord.Interaction, prompt: str, create_thread: bool = True):
     log.info(f'Received command to seek wisdom from {interaction.user}')
     message_history = [
             CHAT_SYSTEM_MESSAGE,
@@ -244,8 +268,9 @@ async def seek_wisdom(interaction: discord.Interaction, prompt: str):
         log.error(f'Exception occurred while generating wisdom for user {interaction.user.display_name}', exc_info=True)
     log.info(f'Returning wisdom to user: {responseText}')
     await interaction.followup.send(content=responseText)
-    response = await interaction.original_response()
-    await response.create_thread(name=prompt, auto_archive_duration=60)
+    if create_thread:
+        response = await interaction.original_response()
+        await response.create_thread(name=prompt, auto_archive_duration=60)
 
 @client.tree.command(name="invite", description="Invite Users to an Event")
 async def invite(interaction: discord.Interaction):
