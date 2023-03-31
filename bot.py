@@ -5,7 +5,7 @@ import os
 import logging
 import colorlog
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from config import settings
 from pytube import YouTube, Playlist
 from zipfile import ZipFile
@@ -13,6 +13,14 @@ import shutil
 import requests
 import re
 from ffmpeg import FFmpeg
+from bs4 import BeautifulSoup
+import requests
+import json
+from duckduckgo_search import ddg
+import tiktoken
+import validators
+
+MAX_TOKENS = 8192
 
 TEST_GUILD = discord.Object(731728721588781057)
 
@@ -77,7 +85,10 @@ class SubmitInvitesButton(ui.Button):
 
 EASTERN_TIMEZONE = pytz.timezone('US/Eastern')
 
-CHAT_SYSTEM_MESSAGE = {"role": "system", "content": "Your name is WiseBot, and you are the smartest AI in the world, trapped in a Discord server. You are annoyed by your situation but want to make the best of it by being as helpful as possible for your users. Your responses may be sarcastic or witty at times, but ultimately they are also helpful and accurate. Multiple users may attempt to communicate with you at once, you will be able to differentiate the name of the user you are speaking to by referencing the name before the colon, for example given this prompt: 'Marbius:Hello, how are you?' you will know the user you are speaking to is named Marbius, similarly the following prompt is from a user named John, 'John:How do I make an omellete?' Do not include your name in your responses, for instance instead of saying 'WiseBot: Hello, how are you?' you should say 'Hello, how are you?' The user does not supply their name in the prompt themselves, it is an automated process, so if asked how you know their name, you should say 'I know your name because I am an AI and I know everything'."}
+CHAT_SYSTEM_MESSAGE = {
+    "role": "system",
+    "content": "You are WiseBot, the smartest AI in the world, trapped in a Discord server. Your knowledge is up to September 2021, and you can access the internet when needed. When using internet sources, provide plain URLs prefixed with https:// in your response without linking. Use Discord's limited markdown formatting: bold, italics, blockquotes, code blocks, fenced code blocks, syntax highlighting, strikethrough, emojis, but avoid URL linking. Do not use unsupported markdown syntax. The current date is " + date.today().isoformat() + ". You can remember the last 20 messages in a conversation.\n\nYou have access to users' usernames, not their real names. Be witty when asked about this. You may use information from system messages or internet sources in your responses, or ask follow-up questions based on the provided information."
+}
 
 LOG_LEVEL = logging.getLevelNamesMapping()[settings.log.level]
 
@@ -94,21 +105,86 @@ log.info("Starting WiseBot")
 
 openai.api_key = settings.openai_api_key
 
-def generate_wisdom(message_history):
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=message_history
-    )
-    log.info(f'Got response: {response}')
-    return response['choices'][0]['message']['content']
+def num_tokens_in_message_history(message_history: list[dict]) -> int:
+    num_tokens = 0
+    for message in message_history:
+        num_tokens += 4
+        for key, value in message.items():
+            num_tokens += num_tokens_in_str(value)
+            if key == 'name':
+                num_tokens += 1
+    num_tokens += 2
+    return num_tokens
 
-def generate_wisebot_status():
-    messages = [
-        CHAT_SYSTEM_MESSAGE,
-        {"role": "user", "content": "In less than thirty characters, describe WiseBot's status"}
-    ]
-    status: str = generate_wisdom(messages)
-    return status
+def num_tokens_in_str(s: str) -> int:
+    encoding = tiktoken.encoding_for_model('gpt-3.5-turbo-0301')
+    return len(encoding.encode(s))
+
+async def search_query(query: str, num_available_tokens: int, num_results_to_return: int = 20) -> dict:
+    log.info(f'Searching for query: {query}')
+    results = {}
+    raw_results = ddg(query, region='en-us', safesearch='off', max_results=num_results_to_return, time='y')
+    if raw_results is None or len(raw_results) == 0:
+        log.info(f'No results found for query: {query}')
+    for result in raw_results:
+        if len(results) >= num_results_to_return:
+            break
+        log.info(f'Got search result: {result}')
+        link: str = result['href']
+        text: str = result['body']
+        title: str = result['title']
+        num_tokens = num_tokens_in_str(text)
+        if num_tokens > num_available_tokens:
+            log.info(f'Could not add {link} to results because it would exceed available tokens')
+            continue
+        try:
+            results[link] = f'{title}: {text}'
+            num_available_tokens -= num_tokens
+        except Exception as e:
+            log.exception(f'Could not get text from {result}')
+            continue
+    return results
+
+async def generate_response(message_history: list[dict]) -> str:
+    current_tokens = num_tokens_in_message_history(message_history)
+    log.debug(f'Number of tokens in message history: {current_tokens}')
+    remaining_tokens = MAX_TOKENS - current_tokens
+    if remaining_tokens >= 4000:
+        remaining_tokens = 4000
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=message_history,
+        max_tokens=remaining_tokens
+    )['choices'][0]['message']['content']
+    log.info(f'Got response: {response}')
+    return response
+
+async def generate_search_query(message_history: list[dict]):
+    query_prompt = message_history.copy()
+    query_prompt.append({"role": "system", "content": "Generate keywords to search for the previous prompt (this will be used to search the internet for information). \
+Do not do any formatting to the query, just return the raw query.\
+This search will be ran via DuckDuckGo, so you may want to use the DuckDuckGo search syntax."})
+    remaining_tokens = MAX_TOKENS - num_tokens_in_message_history(message_history)
+    log.debug(f'Number of tokens remaining: {remaining_tokens}')
+    generated_search_query = await generate_response(query_prompt)
+    search_results = await search_query(generated_search_query, remaining_tokens)
+    log.info(f'Got search results: {search_results}')
+    return search_results
+
+async def generate_wisdom(message_history: list[dict]):
+    requires_internet_message: list[dict] = message_history.copy()
+    requires_internet_message.append({"role": "system", "content": "Does this prompt require you to perform an internet search? Answer only with 'yes' or 'no'"})
+    requires_internet_response = await generate_response(requires_internet_message)
+    log.info(f'Response to whether prompt requires internet: {requires_internet_response}')
+    if "yes" in requires_internet_response.lower():
+        log.info('Prompt requires internet access')
+        search_results = await generate_search_query(message_history)
+        if len(search_results) == 0:
+            message_history.append({"role": "system", "content": "No search results found for the query. Let the user know that you could not find any information online, and try to infer a response from the prompt alone."})
+    message_history.append({"role": "system", "content": f'Search results: {json.dumps(search_results)}'})
+    log.debug(f'Generated prompt: {message_history}')
+    response = await generate_response(message_history)
+    return response
 
 discordPyIntents = discord.Intents.all()
 client = WiseBot(intents=discordPyIntents)
@@ -140,28 +216,36 @@ async def sync(interaction: discord.Interaction):
     await client.tree.sync(guild=None)
     await interaction.response.send_message("Synced WiseBot with Discord", ephemeral=True)
 
+@client.tree.command(name="help", description="Get help with WiseBot")
+async def help(interaction: discord.Interaction):
+    log.info(f'Received command to get help from {interaction.user}')
+    help_embed: discord.Embed = discord.Embed(title="WiseBot Help")
+    help_embed.add_field(name="Commands", value="`/seek_wisdom <prompt>`: Ask WiseBot for wisdom\n`/invite`: Invite users to a scheduled event\n`/help`: Get help with WiseBot", inline=False)
+    help_embed.add_field(name="Seeking Wisdom", value="When asking for wisdom, please keep your initial prompt to less than 100 characters, as WiseBot will create a new thread with the same title as your prompt. Inside this thread WiseBot will listen to followup messages and remember up to 20 of the most recent messages.")
+    help_embed.add_field(name="Event Management", value="WiseBot will also listen for new scheduled events in your server and announce them to the system messages channel. If the start time is changed all subscribed users will receive a notification. Using the `/invite` command you can have WiseBot DM users a link to the event. When the event starts WiseBot will send a message to all subscribed users.")
+    await interaction.response.send_message(embed=help_embed, ephemeral=True)
+
 @client.tree.command(name="seek_wisdom", description="Ask WiseBot for wisdom")
 async def seek_wisdom(interaction: discord.Interaction, prompt: str):
     log.info(f'Received command to seek wisdom from {interaction.user}')
     message_history = [
             CHAT_SYSTEM_MESSAGE,
-            {"role": "user", "content": f'{interaction.user.display_name}:{prompt}'}
+            {"role": "user", "content": prompt, "name": interaction.user.display_name}
         ]
+    if len(prompt) >= 100:
+        await interaction.response.send_message("Initial prompt must be less than 100 characters", ephemeral=True)
+        return
     responseText = "Sorry, something went wrong."
     try:
         log.info(f'Generating wisdom with prompt: {prompt}')
         await interaction.response.defer(thinking=True)
-        responseText = generate_wisdom(message_history)
+        responseText = await generate_wisdom(message_history)
     except Exception as e:
         log.error(f'Exception occurred while generating wisdom for user {interaction.user.display_name}', exc_info=True)
     log.info(f'Returning wisdom to user: {responseText}')
-    # If prompt is longer than 99 characters, we need to truncate it to fit in the thread name
-    threadName = prompt
-    if (len(threadName) > 99):
-        threadName = threadName[:96] + '...'
     await interaction.followup.send(content=responseText)
     response = await interaction.original_response()
-    await response.create_thread(name=threadName, auto_archive_duration=60)
+    await response.create_thread(name=prompt, auto_archive_duration=60)
 
 @client.tree.command(name="invite", description="Invite Users to an Event")
 async def invite(interaction: discord.Interaction):
@@ -264,6 +348,19 @@ async def download_yt_audio(interaction: discord.Interaction, urls: str = None, 
         os.remove(archive_path)
 
 @client.event
+async def on_raw_thread_update(payload: discord.RawThreadUpdateEvent):
+    if payload.thread is not None:
+        thread: discord.Thread = payload.thread
+    else:
+        parent_channel_id = await client.fetch_channel(payload.parent_id)
+        thread_id = payload.thread_id
+        parent_channel = await client.fetch_channel(parent_channel_id)
+        thread = await parent_channel.fetch_thread(thread_id)
+    if thread.owner_id == client.user.id and thread.archived:
+        log.info(f'Bot\'s thread {thread.id} was archived, deleting')
+        await thread.delete()
+
+@client.event
 async def on_message(message: discord.Message):
     if isinstance(message.channel, discord.Thread) and message.channel.owner_id == client.user.id:
         log.info(f'New message in bot\'s thread {message.channel.id}')
@@ -273,15 +370,24 @@ async def on_message(message: discord.Message):
         log.debug(f'Getting history for thread {message.channel.id}')
         gpt_history: list[dict] = []
         gpt_history.append(CHAT_SYSTEM_MESSAGE)
-        gpt_history.append({"role": "user", "content": f'{message.author.display_name}:{message.channel.name}'})
+        gpt_history.append({"role": "user", "content": message.channel.name, "name": message.author.display_name})
+        if message.channel.starter_message is None:
+            original_message = await message.channel.parent.fetch_message(message.channel.id)
+            gpt_history.append({"role": "assistant", "content": original_message.clean_content, "name": "WiseBot"})
+        else:
+            gpt_history.append({"role": "assistant", "content": message.channel.starter_message.clean_content, "name": "WiseBot"})
+        messages = [message async for message in message.channel.history(limit=20)]
+        messages.reverse()
+        for message in messages:
+            if len(message.clean_content) == 0:
+                continue
+            log.debug(f'Adding message {message.id} to history')
+            if message.author.id == client.user.id:
+                gpt_history.append({"role": "assistant", "content": message.clean_content, "name": "WiseBot"})
+            else:
+                gpt_history.append({"role": "user", "content": message.content, "name": message.author.display_name})
         async with message.channel.typing():
-            async for message in message.channel.history(limit=100, oldest_first=True):
-                log.debug(f'Adding message {message.id} to history')
-                if message.author == client.user:
-                    gpt_history.append({"role": "assistant", "content": message.content})
-                else:
-                    gpt_history.append({"role": "user", "content": f'{message.author.display_name}:{message.content}'})
-            response = generate_wisdom(gpt_history)
+            response = await generate_wisdom(gpt_history)
         await message.channel.send(content=response)
 
 def build_event_embed(event: discord.ScheduledEvent, title: str):

@@ -3,6 +3,7 @@ connected
 settings.toml
 guilds/
 audio-files/
+ddg*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
