@@ -7,6 +7,12 @@ import colorlog
 import pytz
 from datetime import datetime, timedelta, date
 from config import settings
+from pytube import YouTube, Playlist
+from zipfile import ZipFile
+import shutil
+import requests
+import re
+from ffmpeg import FFmpeg
 from bs4 import BeautifulSoup
 import requests
 import json
@@ -18,12 +24,16 @@ MAX_TOKENS = 8192
 
 TEST_GUILD = discord.Object(731728721588781057)
 
+PLIK_URL = "http://192.168.0.229:7080"
+
 class WiseBot(discord.AutoShardedClient):
     def __init__(self, *, intents: discord.Intents):
-        super().__init__(intents=intents, shard_count=settings.bot.shards)
+        super().__init__(intents=intents, shard_count=settings.bot.shards, heartbeat_timeout=60)
         self.tree = discord.app_commands.CommandTree(self)
     async def setup_hook(self):
         await self.tree.sync(guild=TEST_GUILD)
+        await self.tree.sync(guild=None)
+        self.tree.copy_global_to(guild=TEST_GUILD)
 
 class UserInvitesDropdown(ui.UserSelect):
     def __init__(self):
@@ -153,29 +163,13 @@ async def generate_search_query(message_history: list[dict]):
     query_prompt = message_history.copy()
     query_prompt.append({"role": "system", "content": "Generate keywords to search for the previous prompt (this will be used to search the internet for information). \
 Do not do any formatting to the query, just return the raw query.\
-This search will be ran via DuckDuckGo, so you may or may not want to use the DuckDuckGo search syntax."})
+This search will be ran via DuckDuckGo, so you may want to use the DuckDuckGo search syntax."})
     remaining_tokens = MAX_TOKENS - num_tokens_in_message_history(message_history)
     log.debug(f'Number of tokens remaining: {remaining_tokens}')
     generated_search_query = await generate_response(query_prompt)
     search_results = await search_query(generated_search_query, remaining_tokens)
     log.info(f'Got search results: {search_results}')
     return search_results
-
-async def check_for_further_info(message_history: list[dict], search_results: dict):
-    message_history.append({"role": "system", "content": f'Search results: {json.dumps(search_results)}'})
-    further_info_message: list[dict] = message_history.copy()
-    further_info_message.append({"role": "system", "content": "Do you need details from one of the urls? If not, say 'no', otherwise your response should only be a valid url you want more details from."})
-    further_info_response = await generate_response(further_info_message)
-    log.info(f'Response to whether more info is needed: {further_info_response}')
-    if validators.url(further_info_response):
-        log.info(f'WiseBot needs more info from {further_info_response}')
-        page = requests.get(further_info_response)
-        soup = BeautifulSoup(page.content, 'html.parser')
-        text = soup.body.get_text(strip=True)
-        message_history.append({"role": "system", "content": f'Here is the content of {further_info_response} (including HTML), you may use information from this to generate a response: \n{text}'})
-    else:
-        log.info('WiseBot does not need more info')
-    return message_history
 
 async def generate_wisdom(message_history: list[dict]):
     requires_internet_message: list[dict] = message_history.copy()
@@ -187,8 +181,7 @@ async def generate_wisdom(message_history: list[dict]):
         search_results = await generate_search_query(message_history)
         if len(search_results) == 0:
             message_history.append({"role": "system", "content": "No search results found for the query. Let the user know that you could not find any information online, and try to infer a response from the prompt alone."})
-        else:
-            message_history = await check_for_further_info(message_history, search_results)
+    message_history.append({"role": "system", "content": f'Search results: {json.dumps(search_results)}'})
     log.debug(f'Generated prompt: {message_history}')
     response = await generate_response(message_history)
     return response
@@ -198,12 +191,10 @@ client = WiseBot(intents=discordPyIntents)
 
 @client.event
 async def on_ready():
-    create_health_file()
     log.info("WiseBot is ready")
 
 @client.event
 async def on_disconnect():
-    delete_health_file()
     log.warning("WiseBot is disconnected")
 
 @client.tree.command(name="status", description="Get WiseBot's status", guild=TEST_GUILD)
@@ -269,6 +260,92 @@ async def invite(interaction: discord.Interaction):
             event_select.append(discord.SelectOption(label=event.name, description=event.description, value=event.id))
     await interaction.response.send_message(content="Select an event and users to invite", \
                                             view=EventInviteView(EventDropdown(event_select), UserInvitesDropdown(), interaction.user, interaction, events), ephemeral=True)
+
+def make_safe_filename(filename: str):
+    # Replace spaces with underscores
+    filename = filename.replace(" ", "_")
+    # Remove non-alphanumeric characters except for dots and underscores
+    filename = re.sub(r'[^\w\.\_]', '', filename)
+    # Remove leading and trailing dots and underscores
+    filename = re.sub(r'^[._]|[._]$', '', filename)
+    # Ensure filename is not empty
+    filename = filename or "unnamed"
+    return filename
+
+def convert_mp4_to_ogg(input_file: str) -> str:
+    output_file = input_file.replace('.mp4', '.ogg')
+    log.info(f'Converting {input_file} to OGG')
+    ffmpeg = (
+        FFmpeg()
+        .option("y")
+        .option("vn")
+        .input(input_file)
+        .output(output_file, acodec="libvorbis")
+    )
+    ffmpeg.execute()
+    return output_file
+
+@client.tree.command(name="download_yt_audio", description="Download YouTube Audio from comma-separated URLs or a Playlist")
+@app_commands.describe(urls = "Comma-separated list of YouTube URLs", playlist = "YouTube Playlist URL")
+async def download_yt_audio(interaction: discord.Interaction, urls: str = None, playlist: str = None):
+    log.info(f'Received command to download YouTube audio from {interaction.user}')
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    output_dir = f'./audio-files/{interaction.id}'
+    if playlist is not None:
+        log.info(f'Downloading YouTube audio from playlist {playlist}')
+        url_list = Playlist(playlist).video_urls
+    elif urls is not None:
+        url_list = urls.split(',')
+    else:
+        await interaction.followup.send(content="No URLs or playlist provided", ephemeral=True)
+        return
+    failures = []
+    file_paths = []
+    for url in url_list:
+        try:
+            log.info(f'Downloading YouTube audio from {url}')
+            await interaction.followup.send(content=f'Downloading YouTube audio from {url}', ephemeral=True, silent=True)
+            yt = YouTube(url)
+            filename = f'{make_safe_filename(yt.title)}.mp4'
+            audio_stream = yt.streams.get_audio_only()
+            path = audio_stream.download(output_dir, max_retries=3, filename=filename)
+            log.info(f'Downloaded {path}')
+            ogg_path = convert_mp4_to_ogg(path)
+            file_paths.append({'fileName': os.path.basename(ogg_path), 'path': ogg_path})
+        except Exception as e:
+            log.exception(f'Exception occurred while downloading YouTube audio from {url}', exc_info=True)
+            await interaction.followup.send(content=f'FAILED to download YouTube audio from {url}', ephemeral=True, silent=False)
+            failures.append(url)
+            continue
+    log.info(f'Uploading {len(file_paths)} files to Plik')
+    if len(file_paths) == 0:
+        await interaction.followup.send(content=f'Failed to download YouTube audio from any URLs', ephemeral=True)
+        return
+    if len(file_paths) == 1:
+        upload_response = requests.post(PLIK_URL, files={'file': open(file_paths[0]['path'], 'rb')})
+        download_url = upload_response.text
+        await interaction.followup.send(content=f'YouTube audio downloaded from 1 URL. Failed to download from {len(failures)} URLs. Download here: {download_url}', ephemeral=True)
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+        return
+    archive_name = f'audio-files-{interaction.id}.zip'
+    archive_path = f'./audio-files/{archive_name}'
+    with ZipFile(archive_path, 'w') as zip:
+        for file_path in file_paths:
+            log.debug(f'Adding {file_path["fileName"]} to archive')
+            zip.write(file_path['path'], arcname=file_path['fileName'])
+    with open(archive_path, 'rb') as f:
+        log.debug(f'Uploading {archive_name} to Plik')
+        zip_upload_response = requests.post(PLIK_URL, files={'file': f}, stream=True)
+    if zip_upload_response.status_code != 200:
+        await interaction.followup.send(content=f'Failed to upload archive to Plik', ephemeral=True)
+        return
+    download_url = zip_upload_response.text
+    await interaction.followup.send(content=f'YouTube audio downloaded from {len(url_list) - len(failures)} URLs. Failed to download from {len(failures)} URLs. Download here: {download_url}', ephemeral=True)
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    if os.path.exists(archive_path):
+        os.remove(archive_path)
 
 @client.event
 async def on_raw_thread_update(payload: discord.RawThreadUpdateEvent):
@@ -359,15 +436,5 @@ async def on_scheduled_event_update(before: discord.ScheduledEvent, after: disco
     if (before.location is not after.location) or (before.channel is not after.channel):
         log.info(f'Scheduled event {before.id} location or channel changed, notifying users')
         await notify_event_subscribers(event, f'Event {event.name}\'s location or channel has changed')
-
-def create_health_file():
-    with open('connected', 'w'):
-        pass
-
-# Function to delete the health file
-def delete_health_file():
-    # Make sure the file exists
-    if os.path.exists('connected'):
-        os.remove('connected')
 
 client.run(token=settings.discord_secret, log_handler=None)

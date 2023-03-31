@@ -27,5 +27,5 @@ jobs:
     - name: Deploy Stage
       uses: fjogeleit/http-request-action@v1
       with:
-        url: 'https://portainer.bramhampton.ml/api/webhooks/7d5b0afd-8261-48b9-9e58-5b49cd271067'
+        url: 'https://portainer.bramhampton.ml/api/webhooks/21da7f14-88d0-42f0-aaba-0e744061c6f9'
         method: 'POST'
