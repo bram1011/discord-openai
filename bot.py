@@ -197,7 +197,7 @@ async def help(interaction: discord.Interaction):
     help_embed.add_field(name="summarize", value="Have WiseBot summarize the contents of a website", inline=False)
     await interaction.response.send_message(embed=help_embed, ephemeral=True)
 
-@client.tree.command(description="Have WiseBot summarize the contents of a website", guild=TEST_GUILD)
+@client.tree.command(description="Have WiseBot summarize the contents of a website")
 async def summarize(interaction: discord.Interaction, url: str):
     log.info(f'Received command to summarize {url} from {interaction.user}')
     summarize_message_content = f'Summarize the following contents of {url}: \n'
