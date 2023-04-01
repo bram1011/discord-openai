@@ -106,7 +106,7 @@ openai.api_key = settings.openai_api_key
 async def search_query(query: str, num_results_to_return: int = 20) -> dict:
     log.info(f'Searching for query: {query}')
     results = {}
-    raw_results = ddg(query, region='en-us', safesearch='off', max_results=num_results_to_return, time='y')
+    raw_results = ddg(query, region='en-us', safesearch='off', max_results=num_results_to_return, time='m')
     if raw_results is None or len(raw_results) == 0:
         log.info(f'No results found for query: {query}')
     for result in raw_results:
