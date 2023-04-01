@@ -151,7 +151,8 @@ async def generate_wisdom(message_history: list[dict]):
         search_results = await generate_search_query(message_history)
         if len(search_results) == 0:
             message_history.append({"role": "system", "content": "No search results found for the query. Let the user know that you could not find any information online, and try to infer a response from the prompt alone."})
-    message_history.append({"role": "system", "content": f'Search results: {json.dumps(search_results)}'})
+        else:
+            message_history.append({"role": "system", "content": f'Search results: {json.dumps(search_results)}'})
     log.debug(f'Generated prompt: {message_history}')
     response = await generate_response(message_history)
     return response
