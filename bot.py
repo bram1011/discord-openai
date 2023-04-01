@@ -17,8 +17,6 @@ from bs4 import BeautifulSoup
 import requests
 import json
 from duckduckgo_search import ddg
-import tiktoken
-import validators
 
 MAX_TOKENS = 8192
 
@@ -105,22 +103,7 @@ log.info("Starting WiseBot")
 
 openai.api_key = settings.openai_api_key
 
-def num_tokens_in_message_history(message_history: list[dict]) -> int:
-    num_tokens = 0
-    for message in message_history:
-        num_tokens += 4
-        for key, value in message.items():
-            num_tokens += num_tokens_in_str(value)
-            if key == 'name':
-                num_tokens += 1
-    num_tokens += 2
-    return num_tokens
-
-def num_tokens_in_str(s: str) -> int:
-    encoding = tiktoken.encoding_for_model('gpt-3.5-turbo-0301')
-    return len(encoding.encode(s))
-
-async def search_query(query: str, num_available_tokens: int, num_results_to_return: int = 20) -> dict:
+async def search_query(query: str, num_results_to_return: int = 20) -> dict:
     log.info(f'Searching for query: {query}')
     results = {}
     raw_results = ddg(query, region='en-us', safesearch='off', max_results=num_results_to_return, time='y')
@@ -133,28 +116,17 @@ async def search_query(query: str, num_available_tokens: int, num_results_to_ret
         link: str = result['href']
         text: str = result['body']
         title: str = result['title']
-        num_tokens = num_tokens_in_str(text)
-        if num_tokens > num_available_tokens:
-            log.info(f'Could not add {link} to results because it would exceed available tokens')
-            continue
         try:
             results[link] = f'{title}: {text}'
-            num_available_tokens -= num_tokens
         except Exception as e:
             log.exception(f'Could not get text from {result}')
             continue
     return results
 
 async def generate_response(message_history: list[dict]) -> str:
-    current_tokens = num_tokens_in_message_history(message_history)
-    log.debug(f'Number of tokens in message history: {current_tokens}')
-    remaining_tokens = MAX_TOKENS - current_tokens
-    if remaining_tokens >= 4000:
-        remaining_tokens = 4000
     response = openai.ChatCompletion.create(
         model="gpt-4",
-        messages=message_history,
-        max_tokens=remaining_tokens
+        messages=message_history
     )['choices'][0]['message']['content']
     log.info(f'Got response: {response}')
     return response
@@ -164,10 +136,8 @@ async def generate_search_query(message_history: list[dict]):
     query_prompt.append({"role": "system", "content": "Generate keywords to search for the previous prompt (this will be used to search the internet for information). \
 Do not do any formatting to the query, just return the raw query.\
 This search will be ran via DuckDuckGo, so you may want to use the DuckDuckGo search syntax."})
-    remaining_tokens = MAX_TOKENS - num_tokens_in_message_history(message_history)
-    log.debug(f'Number of tokens remaining: {remaining_tokens}')
     generated_search_query = await generate_response(query_prompt)
-    search_results = await search_query(generated_search_query, remaining_tokens)
+    search_results = await search_query(generated_search_query)
     log.info(f'Got search results: {search_results}')
     return search_results
 
@@ -235,7 +205,7 @@ async def summarize(interaction: discord.Interaction, url: str):
         website_content = requests.get(url)
         website_soup = BeautifulSoup(website_content.text, 'html.parser')
         website_text = website_soup.body.get_text()
-        if num_tokens_in_str(website_text) > MAX_TOKENS - num_tokens_in_message_history([CHAT_SYSTEM_MESSAGE]):
+        if len(website_text) > MAX_TOKENS:
             await interaction.followup.send("Sorry, the website is too long to summarize.", ephemeral=True)
             return
         summarize_message_content += website_text
