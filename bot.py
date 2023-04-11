@@ -1,6 +1,7 @@
 import openai
 import discord
 from discord import ui, app_commands
+from discord.ext import tasks
 import os
 import logging
 import colorlog
@@ -454,5 +455,15 @@ async def on_scheduled_event_update(before: discord.ScheduledEvent, after: disco
     if (before.location is not after.location) or (before.channel is not after.channel):
         log.info(f'Scheduled event {before.id} location or channel changed, notifying users')
         await notify_event_subscribers(event, f'Event {event.name}\'s location or channel has changed')
+
+@tasks.loop(time=datetime.time(hour=9, tzinfo=EASTERN_TIMEZONE))
+async def check_scheduled_events():
+    for guild in client.guilds:
+        log.info(f'Checking scheduled events for guild {guild.name}({guild.id})')
+        events: list[discord.ScheduledEvent] = guild.scheduled_events()
+        for event in events:
+            if event.start_time.day == datetime.now().day:
+                log.info(f'Event {event.id} is scheduled for today, notifying users')
+                await notify_event_subscribers(event, f'Reminder: {event.name} is scheduled for today')
 
 client.run(token=settings.discord_secret, log_handler=None)
