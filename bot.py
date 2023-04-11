@@ -281,6 +281,28 @@ def convert_mp4_to_ogg(input_file: str) -> str:
     ffmpeg.execute()
     return output_file
 
+@client.tree.command(name="download_yt_video", description="Download Youtube Video")
+@app_commands.describe(url = "YouTube URL")
+async def download_yt_video(interaction: discord.Interaction, url: str):
+    log.info(f'Received command to download YouTube video from {interaction.user}')
+    await interaction.response.send_message(content="Downloading...", ephemeral=True)
+    output_dir = f'./video-files/{interaction.id}'
+    try:
+        log.info(f'Downloading YouTube video from {url}')
+        video = YouTube(url)
+        video_stream = video.streams.get_highest_resolution()
+        video_path = video_stream.download(output_dir, filename=f'{make_safe_filename(video.title)}.mp4')
+        log.info(f'Downloaded YouTube video to {video_path}')
+        upload_response = requests.post(PLIK_URL, files={'file': open(video_path, 'rb')}, stream=True)
+        download_url = upload_response.text
+        log.info(f'Uploaded YouTube video to Plik at {download_url}')
+        await interaction.followup.send(content=f'Download complete: {download_url}', ephemeral=True)
+        await interaction.delete_original_response()
+    except Exception as e:
+        log.exception(f'Exception occurred while downloading YouTube video from {url} for user {interaction.user.display_name}')
+        await interaction.followup.send(content="Sorry, something went wrong.", ephemeral=True)
+    
+
 @client.tree.command(name="download_yt_audio", description="Download YouTube Audio from comma-separated URLs or a Playlist")
 @app_commands.describe(urls = "Comma-separated list of YouTube URLs", playlist = "YouTube Playlist URL")
 async def download_yt_audio(interaction: discord.Interaction, urls: str = None, playlist: str = None):
