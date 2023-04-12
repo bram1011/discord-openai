@@ -6,7 +6,7 @@ import os
 import logging
 import colorlog
 import pytz
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, time
 from config import settings
 from pytube import YouTube, Playlist
 from zipfile import ZipFile
@@ -456,7 +456,7 @@ async def on_scheduled_event_update(before: discord.ScheduledEvent, after: disco
         log.info(f'Scheduled event {before.id} location or channel changed, notifying users')
         await notify_event_subscribers(event, f'Event {event.name}\'s location or channel has changed')
 
-@tasks.loop(time=datetime.time(hour=9, tzinfo=EASTERN_TIMEZONE))
+@tasks.loop(time=time(hour=9, tzinfo=EASTERN_TIMEZONE))
 async def check_scheduled_events():
     for guild in client.guilds:
         log.info(f'Checking scheduled events for guild {guild.name}({guild.id})')
