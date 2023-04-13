@@ -188,16 +188,6 @@ async def sync(interaction: discord.Interaction):
     await client.tree.sync(guild=None)
     await interaction.response.send_message("Synced WiseBot with Discord", ephemeral=True)
 
-@client.tree.command(name="help", description="Get help with WiseBot")
-async def help(interaction: discord.Interaction):
-    log.info(f'Received command to get help from {interaction.user}')
-    help_embed: discord.Embed = discord.Embed(title="WiseBot Help")
-    help_embed.add_field(name="Commands", value="`/seek_wisdom <prompt>`: Ask WiseBot for wisdom\n`/invite`: Invite users to a scheduled event\n`/help`: Get help with WiseBot", inline=False)
-    help_embed.add_field(name="Seeking Wisdom", value="When asking for wisdom, please keep your initial prompt to less than 100 characters, as WiseBot will create a new thread with the same title as your prompt. Inside this thread WiseBot will listen to followup messages and remember up to 20 of the most recent messages.")
-    help_embed.add_field(name="Event Management", value="WiseBot will also listen for new scheduled events in your server and announce them to the system messages channel. If the start time is changed all subscribed users will receive a notification. Using the `/invite` command you can have WiseBot DM users a link to the event. When the event starts WiseBot will send a message to all subscribed users.")
-    help_embed.add_field(name="summarize", value="Have WiseBot summarize the contents of a website", inline=False)
-    await interaction.response.send_message(embed=help_embed, ephemeral=True)
-
 @client.tree.command(description="Have WiseBot summarize the contents of a website")
 async def summarize(interaction: discord.Interaction, url: str):
     log.info(f'Received command to summarize {url} from {interaction.user}')
@@ -371,10 +361,8 @@ async def on_raw_thread_update(payload: discord.RawThreadUpdateEvent):
     if payload.thread is not None:
         thread: discord.Thread = payload.thread
     else:
-        parent_channel_id = await client.fetch_channel(payload.parent_id)
-        thread_id = payload.thread_id
-        parent_channel = await client.fetch_channel(parent_channel_id)
-        thread = await parent_channel.fetch_thread(thread_id)
+        thread_id = payload.data['d']['id']
+        thread: discord.Thread = await client.fetch_channel(thread_id)
     if thread.owner_id == client.user.id and thread.archived:
         log.info(f'Bot\'s thread {thread.id} was archived, deleting')
         await thread.delete()
