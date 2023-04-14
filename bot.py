@@ -454,4 +454,15 @@ async def check_scheduled_events():
                 log.info(f'Event {event.id} is scheduled for today, notifying users')
                 await notify_event_subscribers(event, f'Reminder: {event.name} is scheduled for today')
 
+@tasks.loop(minutes=1)
+async def check_events_within_one_hour():
+    # Check for events that are within one hour of starting
+    for guild in client.guilds:
+        log.info(f'Checking scheduled events for guild {guild.name}({guild.id})')
+        events: list[discord.ScheduledEvent] = guild.scheduled_events()
+        for event in events:
+            if event.start_time - datetime.now() <= timedelta(minutes=60):
+                log.info(f'Event {event.id} is scheduled to start within one hour, notifying users')
+                await notify_event_subscribers(event, f'Event {event.name} is scheduled to start within one hour')
+
 client.run(token=settings.discord_secret, log_handler=None)
