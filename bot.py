@@ -1,7 +1,7 @@
 import openai
 import discord
 from discord import ui, app_commands
-from discord.ext import tasks
+from discord.ext import tasks, commands
 import os
 import logging
 import colorlog
@@ -35,6 +35,8 @@ class WiseBot(discord.AutoShardedClient):
         await self.tree.sync(guild=TEST_GUILD)
         await self.tree.sync(guild=None)
         self.tree.copy_global_to(guild=TEST_GUILD)
+        check_events_today.start()
+        check_events_within_one_hour.start()
 
 class UserInvitesDropdown(ui.UserSelect):
     def __init__(self):
@@ -438,8 +440,8 @@ async def notify_event_subscribers(event: discord.ScheduledEvent, title: str):
     users = event.users()
     async for user in users:
         log.info(f'Notifying user {user}')
-        delete_time: datetime = event.start_time + timedelta(minutes=5)
-        await user.send(embed=embed, delete_after=(delete_time - datetime.now(delete_time.tzinfo)).total_seconds())
+        delete_time: datetime = event.start_time + timedelta(minutes=90)
+        await user.send(embed=embed, delete_after=(delete_time - datetime.now(delete_time.tzinfo)).total_seconds(), content=event.url)
 
 @client.event
 async def on_scheduled_event_create(event: discord.ScheduledEvent):
@@ -462,24 +464,22 @@ async def on_scheduled_event_update(before: discord.ScheduledEvent, after: disco
         await notify_event_subscribers(event, f'Event {event.name}\'s location or channel has changed')
 
 @tasks.loop(time=time(hour=9, tzinfo=EASTERN_TIMEZONE))
-async def check_scheduled_events():
-    for guild in client.guilds:
+async def check_events_today():
+    async for guild in client.fetch_guilds():
         log.info(f'Checking scheduled events for guild {guild.name}({guild.id})')
-        events: list[discord.ScheduledEvent] = guild.scheduled_events()
-        for event in events:
-            if event.start_time.day == datetime.now().day:
-                log.info(f'Event {event.id} is scheduled for today, notifying users')
-                await notify_event_subscribers(event, f'Reminder: {event.name} is scheduled for today')
+        for event in await guild.fetch_scheduled_events(with_counts=True):
+            if event.start_time - datetime.now(event.start_time.tzinfo) <= timedelta(hours=24):
+                log.info(f'Event {event.id} is scheduled to start today, notifying users')
+                await notify_event_subscribers(event, f'{event.name} is scheduled to start within the next 24 hours')
 
-@tasks.loop(minutes=1)
+@tasks.loop(minutes=60)
 async def check_events_within_one_hour():
     # Check for events that are within one hour of starting
-    for guild in client.guilds:
+    async for guild in client.fetch_guilds():
         log.info(f'Checking scheduled events for guild {guild.name}({guild.id})')
-        events: list[discord.ScheduledEvent] = guild.scheduled_events()
-        for event in events:
-            if event.start_time - datetime.now() <= timedelta(minutes=60):
+        for event in await guild.fetch_scheduled_events(with_counts=True):
+            if event.start_time - datetime.now(event.start_time.tzinfo) <= timedelta(minutes=60):
                 log.info(f'Event {event.id} is scheduled to start within one hour, notifying users')
-                await notify_event_subscribers(event, f'Event {event.name} is scheduled to start within one hour')
+                await notify_event_subscribers(event, f'{event.name} is scheduled to start within the hour')
 
 client.run(token=settings.discord_secret, log_handler=None)
