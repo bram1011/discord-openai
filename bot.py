@@ -8,14 +8,16 @@ import colorlog
 import pytz
 from datetime import datetime, timedelta, date, time
 from config import settings
-from pytube import YouTube, Playlist
+from pytube import YouTube, Playlist, exceptions
 from zipfile import ZipFile
 import shutil
 import requests
 import re
+import asyncio
 from ffmpeg import FFmpeg
 from bs4 import BeautifulSoup
 import requests
+import functools
 import json
 from duckduckgo_search import ddg
 
@@ -104,7 +106,14 @@ log.info("Starting WiseBot")
 
 openai.api_key = settings.openai_api_key
 
-async def search_query(query: str, num_results_to_return: int = 20) -> dict:
+def to_thread(func: callable):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        return await asyncio.to_thread(func, *args, **kwargs)
+    return wrapper
+
+@to_thread
+def search_query(query: str, num_results_to_return: int = 20) -> dict:
     log.info(f'Searching for query: {query}')
     results = {}
     raw_results = ddg(query, region='en-us', safesearch='off', max_results=num_results_to_return, time='m')
@@ -124,7 +133,8 @@ async def search_query(query: str, num_results_to_return: int = 20) -> dict:
             continue
     return results
 
-async def generate_response(message_history: list[dict]) -> str:
+@to_thread
+def generate_response(message_history: list[dict]) -> str:
     response = openai.ChatCompletion.create(
         model="gpt-4",
         messages=message_history
@@ -259,6 +269,7 @@ def make_safe_filename(filename: str):
     filename = filename or "unnamed"
     return filename
 
+@to_thread
 def convert_mp4_to_ogg(input_file: str) -> str:
     output_file = input_file.replace('.mp4', '.ogg')
     log.info(f'Converting {input_file} to OGG')
@@ -293,6 +304,24 @@ async def download_yt_video(interaction: discord.Interaction, url: str):
         log.exception(f'Exception occurred while downloading YouTube video from {url} for user {interaction.user.display_name}')
         await interaction.followup.send(content="Sorry, something went wrong.", ephemeral=True)
     
+async def download_audio(url: str, output_dir: str, interaction: discord.Interaction, file_paths: list[str], failures: list[str]):
+    log.info(f'Downloading YouTube audio from {url}')
+    try:
+        await interaction.followup.send(content=f'Downloading YouTube audio from {url}', ephemeral=True, silent=True)
+        yt = YouTube(url)
+        try:
+            filename = f'{make_safe_filename(yt.title)}.mp4'
+        except exceptions.PytubeError:
+            filename = f'{make_safe_filename(url)}.mp4'
+        audio_stream = yt.streams.get_audio_only()
+        path = audio_stream.download(output_dir, max_retries=3, filename=filename)
+        log.info(f'Downloaded {path}')
+        ogg_path = await convert_mp4_to_ogg(path)
+        file_paths.append({'fileName': os.path.basename(ogg_path), 'path': ogg_path})
+    except Exception as e:
+        log.exception(f'Exception occurred while downloading YouTube audio from {url}', exc_info=True)
+        await interaction.followup.send(content=f'FAILED to download YouTube audio from {url}', ephemeral=True, silent=False)
+        failures.append(url)
 
 @client.tree.command(name="download_yt_audio", description="Download YouTube Audio from comma-separated URLs or a Playlist")
 @app_commands.describe(urls = "Comma-separated list of YouTube URLs", playlist = "YouTube Playlist URL")
@@ -310,22 +339,10 @@ async def download_yt_audio(interaction: discord.Interaction, urls: str = None, 
         return
     failures = []
     file_paths = []
+    tasks = []
     for url in url_list:
-        try:
-            log.info(f'Downloading YouTube audio from {url}')
-            await interaction.followup.send(content=f'Downloading YouTube audio from {url}', ephemeral=True, silent=True)
-            yt = YouTube(url)
-            filename = f'{make_safe_filename(yt.title)}.mp4'
-            audio_stream = yt.streams.get_audio_only()
-            path = audio_stream.download(output_dir, max_retries=3, filename=filename)
-            log.info(f'Downloaded {path}')
-            ogg_path = convert_mp4_to_ogg(path)
-            file_paths.append({'fileName': os.path.basename(ogg_path), 'path': ogg_path})
-        except Exception as e:
-            log.exception(f'Exception occurred while downloading YouTube audio from {url}', exc_info=True)
-            await interaction.followup.send(content=f'FAILED to download YouTube audio from {url}', ephemeral=True, silent=False)
-            failures.append(url)
-            continue
+        tasks.append(asyncio.create_task(download_audio(url, output_dir, interaction, file_paths, failures)))
+    await asyncio.gather(*tasks)
     log.info(f'Uploading {len(file_paths)} files to Plik')
     if len(file_paths) == 0:
         await interaction.followup.send(content=f'Failed to download YouTube audio from any URLs', ephemeral=True)
