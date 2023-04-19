@@ -8,7 +8,7 @@ on:
 jobs:
   push_to_registry:
     name: Push To Registry
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout repo
       uses: actions/checkout@v2.6.0
