@@ -26,7 +26,7 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: .
-        platforms: amd64,arm32v7
+        platforms: linux/amd64,linux/arm/v7
         push: true
         tags: docker.bramhampton.ml/discord-openai:latest
     - name: Deploy Stage
