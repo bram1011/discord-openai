@@ -12,14 +12,18 @@ jobs:
     steps:
     - name: Checkout repo
       uses: actions/checkout@v2.6.0
-    - name: Login to Docker Hub
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    - name: Login to Docker Registry
       uses: docker/login-action@v2
       with:
         registry: docker.bramhampton.ml
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
     - name: Build and push
-      uses: docker/build-push-action@v3
+      uses: docker/build-push-action@v4
       with:
         context: .
         platforms: linux/amd64,linux/arm32v7
@@ -28,5 +32,5 @@ jobs:
     - name: Deploy Stage
       uses: fjogeleit/http-request-action@v1
       with:
-        url: 'https://portainer.bramhampton.ml/api/webhooks/21da7f14-88d0-42f0-aaba-0e744061c6f9'
+        url: 'https://portainer.bramhampton.ml/api/webhooks/4f3ca2a9-9c92-4459-914f-34a399980a32'
         method: 'POST'
