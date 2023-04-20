@@ -1,7 +1,7 @@
 import openai
 import discord
 from discord import ui, app_commands
-from discord.ext import tasks, commands
+from discord.ext import tasks
 import os
 import logging
 import colorlog
@@ -90,7 +90,7 @@ EASTERN_TIMEZONE = pytz.timezone('US/Eastern')
 
 CHAT_SYSTEM_MESSAGE = {
     "role": "system",
-    "content": "You are WiseBot, the smartest AI in the world, trapped in a Discord server. Your knowledge is up to September 2021, and you can access the internet when needed. When using internet sources, provide plain URLs prefixed with https:// in your response without linking. Use Discord's limited markdown formatting: bold, italics, blockquotes, code blocks, fenced code blocks, syntax highlighting, strikethrough, emojis, but avoid URL linking. Do not use unsupported markdown syntax. The current date is " + date.today().isoformat() + ". You can remember the last 20 messages in a conversation.\n\nYou have access to users' usernames, not their real names. Be witty when asked about this. You may use information from system messages or internet sources in your responses, or ask follow-up questions based on the provided information."
+    "content": "You are WiseBot, the smartest AI in the world, trapped in a Discord server. Your knowledge without internet is up to September 2021, and you can access the internet when needed. When using internet sources, provide plain URLs prefixed with https:// in your response without linking. Use Discord's limited markdown formatting: bold, italics, blockquotes, code blocks, fenced code blocks, syntax highlighting, strikethrough, emojis, but avoid URL linking. Do not use unsupported markdown syntax. The current date is " + date.today().isoformat() + ". You can remember the last 20 messages in a conversation.\n\nYou have access to users' usernames, not their real names. Be witty when asked about this. You may use information from system messages or internet sources in your responses, or ask follow-up questions based on the provided information."
 }
 
 LOG_LEVEL = logging.getLevelNamesMapping()[settings.log.level]
@@ -144,6 +144,15 @@ def generate_response(message_history: list[dict]) -> str:
     log.info(f'Got response: {response}')
     return response
 
+@to_thread
+def generate_chunked_response(message_history: list[dict]):
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=message_history,
+        stream=True
+    )
+    return response
+
 async def generate_search_query(message_history: list[dict]):
     query_prompt = message_history.copy()
     query_prompt.append({"role": "system", "content": "Generate keywords to search for the previous prompt (this will be used to search the internet for information). \
@@ -167,7 +176,7 @@ async def generate_wisdom(message_history: list[dict]):
         else:
             message_history.append({"role": "system", "content": f'Search results: {json.dumps(search_results)}'})
     log.debug(f'Generated prompt: {message_history}')
-    response = await generate_response(message_history)
+    response = await generate_chunked_response(message_history)
     return response
 
 discordPyIntents = discord.Intents.all()
@@ -223,6 +232,40 @@ async def summarize(interaction: discord.Interaction, url: str):
         log.exception(f'Exception occurred while summarizing {url} for user {interaction.user.display_name}')
         await interaction.followup.send("Sorry, something went wrong.", ephemeral=True)
 
+async def stream_wisdom_to_interaction(interaction: discord.Interaction, message_history: list[dict]):
+    responseText = ''
+    await interaction.response.defer(thinking=True, ephemeral=False)
+    try:
+        for response in await generate_wisdom(message_history):
+            if 'content' in response['choices'][0]['delta']:
+                responseContent = response['choices'][0]['delta']['content']
+            else:
+                continue
+            log.debug(f'Generated partial wisdom: {responseContent}')
+            responseText += responseContent
+            if not interaction.response.is_done():
+                await interaction.followup.send(responseText)
+            else:
+                await interaction.edit_original_response(content=responseText + '⌛⌛⌛')
+    except Exception as e:
+        log.error(f'Exception occurred while generating wisdom for user {interaction.user.display_name}', exc_info=True)
+        await interaction.followup.send("Sorry, something went wrong.", ephemeral=True)
+        return
+    await interaction.edit_original_response(content=responseText)
+    return responseText
+
+async def stream_wisdom_to_message(message: discord.Message, message_history: list[dict]):
+    responseText = ''
+    for response in await generate_wisdom(message_history):
+        if 'content' in response['choices'][0]['delta']:
+            responseContent = response['choices'][0]['delta']['content']
+        else:
+            continue
+        log.debug(f'Generated partial wisdom: {responseContent}')
+        responseText += responseContent
+        await message.edit(content=responseText + '⌛⌛⌛')
+    await message.edit(content=responseText)
+
 @client.tree.command(name="seek_wisdom", description="Ask WiseBot for wisdom")
 async def seek_wisdom(interaction: discord.Interaction, prompt: str, create_thread: bool = True):
     log.info(f'Received command to seek wisdom from {interaction.user}')
@@ -230,21 +273,18 @@ async def seek_wisdom(interaction: discord.Interaction, prompt: str, create_thre
             CHAT_SYSTEM_MESSAGE,
             {"role": "user", "content": prompt, "name": interaction.user.display_name}
         ]
-    if len(prompt) >= 100:
-        await interaction.response.send_message("Initial prompt must be less than 100 characters", ephemeral=True)
-        return
-    responseText = "Sorry, something went wrong."
-    try:
-        log.info(f'Generating wisdom with prompt: {prompt}')
-        await interaction.response.defer(thinking=True)
-        responseText = await generate_wisdom(message_history)
-    except Exception as e:
-        log.error(f'Exception occurred while generating wisdom for user {interaction.user.display_name}', exc_info=True)
-    log.info(f'Returning wisdom to user: {responseText}')
-    await interaction.followup.send(content=responseText)
+    if create_thread is False:
+        message_history.append({"role": "system", "content": "The user will be unable to respond after your message, do not ask any followup questions."})
+    log.info(f'Generating wisdom with prompt: {prompt}')
+    responseText = await stream_wisdom_to_interaction(interaction, message_history)
+    log.info(f'Generated wisdom: {responseText}')
     if create_thread:
+        thread_title = prompt
+        if len(prompt) >= 100:
+            message_history.append({"role": "system", "content": "Summarize the chat topic in less than 100 characters"})
+            thread_title = await generate_response(message_history)
         response = await interaction.original_response()
-        await response.create_thread(name=prompt, auto_archive_duration=60)
+        await response.create_thread(name=thread_title, auto_archive_duration=60)
 
 @client.tree.command(name="invite", description="Invite Users to an Event")
 async def invite(interaction: discord.Interaction):
@@ -412,9 +452,8 @@ async def on_message(message: discord.Message):
                 gpt_history.append({"role": "assistant", "content": message.clean_content, "name": "WiseBot"})
             else:
                 gpt_history.append({"role": "user", "content": message.content, "name": message.author.display_name})
-        async with message.channel.typing():
-            response = await generate_wisdom(gpt_history)
-        await message.channel.send(content=response)
+        wiseBotMessage = await message.channel.send(content='Thinking...')
+        await stream_wisdom_to_message(wiseBotMessage, gpt_history)
 
 def build_event_embed(event: discord.ScheduledEvent, title: str):
     embed: discord.Embed = discord.Embed(title=title, description=event.description, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
