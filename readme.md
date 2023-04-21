@@ -1,0 +1,1 @@
+[![Publish Docker image](https://github.com/bram1011/discord-openai/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/bram1011/discord-openai/actions/workflows/docker-publish.yml)
