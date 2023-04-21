@@ -1,4 +1,5 @@
 import openai
+from openai.embeddings_utils import cosine_similarity
 import discord
 from discord import ui, app_commands
 from discord.ext import tasks
@@ -14,14 +15,18 @@ import shutil
 import requests
 import re
 import asyncio
+import pandas as pd
 from ffmpeg import FFmpeg
 from bs4 import BeautifulSoup
 import requests
 import functools
-import json
+import math
+import tiktoken
 from duckduckgo_search import ddg
 
 MAX_TOKENS = 8192
+MAX_WEB_TOKEN_BUDGET = math.floor(MAX_TOKENS * 0.8)
+MAX_CONVERSATION_HISTORY_BUDGET = math.floor(MAX_TOKENS - MAX_WEB_TOKEN_BUDGET)
 
 TEST_GUILD = discord.Object(731728721588781057)
 
@@ -114,10 +119,74 @@ def to_thread(func: callable):
         return await asyncio.to_thread(func, *args, **kwargs)
     return wrapper
 
-@to_thread
-def search_query(query: str, num_results_to_return: int = 20) -> dict:
+def calculate_tokens(input: str) -> int:
+    encoder = tiktoken.get_encoding("cl100k_base")
+    return len(encoder.encode(input))
+
+def calculate_conversation_tokens(messages: list[dict]) -> int:
+    num_tokens = 0
+    for message in messages:
+        num_tokens += 3
+        for key, value in message.items():
+            num_tokens += calculate_tokens(value)
+            if key == 'name':
+                num_tokens += 1
+    num_tokens += 3
+    return num_tokens
+
+async def generate_related_page_message(df: pd.DataFrame, prompt: str, num_pages_to_add: int = 3, sorted: bool = False) -> list[dict]:
+    if not sorted:
+        prompt_embedding = openai.Embedding.create(model="text-embedding-ada-002", input=prompt)['data'][0]['embedding']
+        df['similarity'] = df['embedding'].apply(lambda x: cosine_similarity(x, prompt_embedding))
+        sorted_dataframe = df.sort_values(by='similarity', ascending=False)
+    else:
+        sorted_dataframe = df
+    most_related_links = sorted_dataframe.head(num_pages_to_add)['link'].to_list()
+    messages = []
+    max_page_tokens = MAX_WEB_TOKEN_BUDGET / num_pages_to_add
+    num_failures = 0
+    for link in most_related_links:
+        log.info(f'Adding related page to prompt: {link}')
+        try:
+            site_response = requests.get(link, timeout=5)
+            if site_response.status_code != 200:
+                log.warning(f'Could not get page: {link}')
+                sorted_dataframe.drop(sorted_dataframe[sorted_dataframe['link'] == link].index, inplace=True)
+                num_failures += 1
+                continue
+            soup = BeautifulSoup(site_response.content, 'lxml')
+        except Exception as e:
+            log.exception(f'Could not get page: {link}')
+            sorted_dataframe.drop(sorted_dataframe[sorted_dataframe['link'] == link].index, inplace=True)
+            num_failures += 1
+            continue
+        log.debug(f'Got page: {link}')
+        soup = soup.body
+        soup = soup.find_all(
+            ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'section'], 
+            recursive=True
+            )
+        text = ''
+        for tag in soup:
+            text += tag.get_text() + ' '
+        text = re.sub(r'\n{2,}', '\n', text)
+        text = re.sub(r'\t{2,}', '\t', text)
+        if calculate_tokens(text) > max_page_tokens:
+            log.warning(f'Page {link} is too long, skipping')
+            num_failures += 1
+            sorted_dataframe.drop(sorted_dataframe[sorted_dataframe['link'] == link].index, inplace=True)
+            continue
+        messages.append({'role': 'user', 'content': f'Content of {link}: {text}'})
+        log.debug(f'Added related page to prompt: {link}')
+        sorted_dataframe.drop(sorted_dataframe[sorted_dataframe['link'] == link].index, inplace=True)
+    if num_failures > 0 and len(sorted_dataframe) > num_failures:
+        log.warning(f'Could not add {num_failures} related pages to prompt')
+        return await generate_related_page_message(sorted_dataframe, prompt, num_failures, True)
+    return messages
+
+async def search_query(query: str, num_results_to_return: int = 30) -> pd.DataFrame:
     log.info(f'Searching for query: {query}')
-    results = {}
+    results = []
     raw_results = ddg(query, region='en-us', safesearch='off', max_results=num_results_to_return, time='m')
     if raw_results is None or len(raw_results) == 0:
         log.info(f'No results found for query: {query}')
@@ -129,11 +198,21 @@ def search_query(query: str, num_results_to_return: int = 20) -> dict:
         text: str = result['body']
         title: str = result['title']
         try:
-            results[link] = f'{title}: {text}'
+            results.append({'content': f'{title}: {text}', 'link': link})
         except Exception as e:
             log.exception(f'Could not get text from {result}')
             continue
-    return results
+    df = pd.DataFrame(results)
+    df['embedding'] = await calculate_embeddings(df['content'].to_list())
+    return df
+
+@to_thread
+def calculate_embeddings(data: list[str]) -> list:
+    log.info(f'Calculating embeddings for {len(data)} results')
+    embeddings = []
+    for content in data:
+        embeddings.append(openai.Embedding.create(model="text-embedding-ada-002", input=content)['data'][0]['embedding'])
+    return embeddings
 
 @to_thread
 def generate_response(message_history: list[dict]) -> str:
@@ -153,18 +232,19 @@ def generate_chunked_response(message_history: list[dict]):
     )
     return response
 
-async def generate_search_query(message_history: list[dict]):
+async def generate_search_query(message_history: list[dict]) -> pd.DataFrame:
     query_prompt = message_history.copy()
     query_prompt.append({"role": "system", "content": "Generate keywords to search for the previous prompt (this will be used to search the internet for information). \
 Do not do any formatting to the query, just return the raw query.\
 This search will be ran via DuckDuckGo, so you may want to use the DuckDuckGo search syntax."})
     generated_search_query = await generate_response(query_prompt)
     search_results = await search_query(generated_search_query)
-    log.info(f'Got search results: {search_results}')
+    log.info('Got search results')
     return search_results
 
 async def generate_wisdom(message_history: list[dict]):
     requires_internet_message: list[dict] = message_history.copy()
+    prompt = message_history[-1]['content']
     requires_internet_message.append({"role": "system", "content": "Does this prompt require you to perform an internet search? Answer only with 'yes' or 'no'"})
     requires_internet_response = await generate_response(requires_internet_message)
     log.info(f'Response to whether prompt requires internet: {requires_internet_response}')
@@ -174,7 +254,7 @@ async def generate_wisdom(message_history: list[dict]):
         if len(search_results) == 0:
             message_history.append({"role": "system", "content": "No search results found for the query. Let the user know that you could not find any information online, and try to infer a response from the prompt alone."})
         else:
-            message_history.append({"role": "system", "content": f'Search results: {json.dumps(search_results)}'})
+            message_history.extend(await generate_related_page_message(search_results, prompt))
     log.debug(f'Generated prompt: {message_history}')
     response = await generate_chunked_response(message_history)
     return response
@@ -232,9 +312,9 @@ async def summarize(interaction: discord.Interaction, url: str):
         log.exception(f'Exception occurred while summarizing {url} for user {interaction.user.display_name}')
         await interaction.followup.send("Sorry, something went wrong.", ephemeral=True)
 
-async def stream_wisdom_to_interaction(interaction: discord.Interaction, message_history: list[dict]):
+async def stream_wisdom_to_interaction(interaction: discord.Interaction, message_history: list[dict], private: bool):
     responseText = ''
-    await interaction.response.defer(thinking=True, ephemeral=False)
+    await interaction.response.defer(thinking=True, ephemeral=private)
     try:
         for response in await generate_wisdom(message_history):
             if 'content' in response['choices'][0]['delta']:
@@ -243,8 +323,11 @@ async def stream_wisdom_to_interaction(interaction: discord.Interaction, message
                 continue
             log.debug(f'Generated partial wisdom: {responseContent}')
             responseText += responseContent
+            if len(responseText) > 1997:
+                await interaction.edit_original_response(content=responseText)
+                responseText = ''
             if not interaction.response.is_done():
-                await interaction.followup.send(responseText)
+                await interaction.followup.send(responseText, ephemeral=private)
             else:
                 await interaction.edit_original_response(content=responseText + '⌛⌛⌛')
     except Exception as e:
@@ -263,26 +346,27 @@ async def stream_wisdom_to_message(message: discord.Message, message_history: li
             continue
         log.debug(f'Generated partial wisdom: {responseContent}')
         responseText += responseContent
+        if len(responseText) > 1997:
+            await message.edit(content=responseText)
+            responseText = ''
         await message.edit(content=responseText + '⌛⌛⌛')
     await message.edit(content=responseText)
 
 @client.tree.command(name="seek_wisdom", description="Ask WiseBot for wisdom")
-async def seek_wisdom(interaction: discord.Interaction, prompt: str, create_thread: bool = True):
+async def seek_wisdom(interaction: discord.Interaction, prompt: str, create_thread: bool = True, private: bool = False):
     log.info(f'Received command to seek wisdom from {interaction.user}')
     message_history = [
             CHAT_SYSTEM_MESSAGE,
             {"role": "user", "content": prompt, "name": interaction.user.display_name}
         ]
-    if create_thread is False:
+    if not create_thread:
         message_history.append({"role": "system", "content": "The user will be unable to respond after your message, do not ask any followup questions."})
     log.info(f'Generating wisdom with prompt: {prompt}')
-    responseText = await stream_wisdom_to_interaction(interaction, message_history)
+    responseText = await stream_wisdom_to_interaction(interaction, message_history, private)
     log.info(f'Generated wisdom: {responseText}')
-    if create_thread:
-        thread_title = prompt
-        if len(prompt) >= 100:
-            message_history.append({"role": "system", "content": "Summarize the chat topic in less than 100 characters"})
-            thread_title = await generate_response(message_history)
+    if create_thread and not private:
+        message_history.append({"role": "system", "content": "Summarize the chat topic in less than 100 characters"})
+        thread_title = await generate_response(message_history)
         response = await interaction.original_response()
         await response.create_thread(name=thread_title, auto_archive_duration=60)
 
@@ -443,17 +527,23 @@ async def on_message(message: discord.Message):
         else:
             gpt_history.append({"role": "assistant", "content": message.channel.starter_message.clean_content, "name": "WiseBot"})
         messages = [message async for message in message.channel.history(limit=20)]
-        messages.reverse()
         for message in messages:
             if len(message.clean_content) == 0:
                 continue
             log.debug(f'Adding message {message.id} to history')
             if message.author.id == client.user.id:
-                gpt_history.append({"role": "assistant", "content": message.clean_content, "name": "WiseBot"})
+                gpt_history.insert(3, {"role": "assistant", "content": message.clean_content, "name": "WiseBot"})
             else:
-                gpt_history.append({"role": "user", "content": message.content, "name": message.author.display_name})
+                gpt_history.insert(3, {"role": "user", "content": message.content, "name": message.author.display_name})
+            if calculate_conversation_tokens(gpt_history) >= MAX_CONVERSATION_HISTORY_BUDGET:
+                break
         wiseBotMessage = await message.channel.send(content='Thinking...')
-        await stream_wisdom_to_message(wiseBotMessage, gpt_history)
+        try:
+            await stream_wisdom_to_message(wiseBotMessage, gpt_history)
+        except Exception as e:
+            log.exception(f'Error streaming wisdom to message {wiseBotMessage.id}')
+            await wiseBotMessage.reply(content='Error while creating wisdom.')
+            return
 
 def build_event_embed(event: discord.ScheduledEvent, title: str):
     embed: discord.Embed = discord.Embed(title=title, description=event.description, timestamp=event.start_time.astimezone(EASTERN_TIMEZONE), color=discord.Color.red())
