@@ -26,6 +26,5 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: .
-        platforms: linux/amd64,linux/arm/v7
         push: true
         tags: docker.bramhampton.ml/discord-openai:latest
