@@ -1,5 +1,5 @@
 [bot]
-shards = 1
+shards = 5
 
 [log]
 level = "DEBUG"
