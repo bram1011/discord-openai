@@ -176,7 +176,7 @@ async def generate_related_page_message(df: pd.DataFrame, prompt: str, num_pages
             num_failures += 1
             sorted_dataframe.drop(sorted_dataframe[sorted_dataframe['link'] == link].index, inplace=True)
             continue
-        messages.append({'role': 'user', 'content': f'Content of {link}: {text}'})
+        messages.append({'role': 'system', 'content': f'Content of {link}: {text}'})
         log.debug(f'Added related page to prompt: {link}')
         sorted_dataframe.drop(sorted_dataframe[sorted_dataframe['link'] == link].index, inplace=True)
     if num_failures > 0 and len(sorted_dataframe) > num_failures:
