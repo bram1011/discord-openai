@@ -232,7 +232,7 @@ def generate_chunked_response(message_history: list[dict]):
     )
     return response
 
-async def generate_search_query(message_history: list[dict]) -> pd.DataFrame:
+async def generate_search_query(message_history: list[dict]) -> tuple(str, pd.DataFrame):
     query_prompt = message_history.copy()
     query_prompt.append({"role": "system", "content": "Generate keywords to search for the previous prompt (this will be used to search the internet for information). \
 Do not do any formatting to the query, just return the raw query.\
@@ -240,21 +240,20 @@ This search will be ran via DuckDuckGo, so you may want to use the DuckDuckGo se
     generated_search_query = await generate_response(query_prompt)
     search_results = await search_query(generated_search_query)
     log.info('Got search results')
-    return search_results
+    return generate_search_query, search_results
 
 async def generate_wisdom(message_history: list[dict]):
     requires_internet_message: list[dict] = message_history.copy()
-    prompt = message_history[-1]['content']
     requires_internet_message.append({"role": "system", "content": "Does this prompt require you to perform an internet search? Answer only with 'yes' or 'no'"})
     requires_internet_response = await generate_response(requires_internet_message)
     log.info(f'Response to whether prompt requires internet: {requires_internet_response}')
     if "yes" in requires_internet_response.lower():
         log.info('Prompt requires internet access')
-        search_results = await generate_search_query(message_history)
+        search_query, search_results = await generate_search_query(message_history)
         if len(search_results) == 0:
             message_history.append({"role": "system", "content": "No search results found for the query. Let the user know that you could not find any information online, and try to infer a response from the prompt alone."})
         else:
-            message_history.extend(await generate_related_page_message(search_results, prompt))
+            message_history.extend(await generate_related_page_message(search_results, search_query))
     log.debug(f'Generated prompt: {message_history}')
     response = await generate_chunked_response(message_history)
     return response
