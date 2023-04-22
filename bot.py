@@ -232,7 +232,7 @@ def generate_chunked_response(message_history: list[dict]):
     )
     return response
 
-async def generate_search_query(message_history: list[dict]) -> tuple(str, pd.DataFrame):
+async def generate_search_query(message_history: list[dict]):
     query_prompt = message_history.copy()
     query_prompt.append({"role": "system", "content": "Generate keywords to search for the previous prompt (this will be used to search the internet for information). \
 Do not do any formatting to the query, just return the raw query.\
