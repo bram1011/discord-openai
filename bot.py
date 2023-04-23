@@ -232,7 +232,7 @@ def generate_chunked_response(message_history: list[dict]):
     )
     return response
 
-async def generate_search_query(message_history: list[dict]):
+async def generate_search_query(message_history: list[dict]) -> tuple[str, pd.DataFrame]:
     query_prompt = message_history.copy()
     query_prompt.append({"role": "system", "content": "Generate keywords to search for the previous prompt (this will be used to search the internet for information). \
 Do not do any formatting to the query, just return the raw query.\
@@ -240,7 +240,7 @@ This search will be ran via DuckDuckGo, so you may want to use the DuckDuckGo se
     generated_search_query = await generate_response(query_prompt)
     search_results = await search_query(generated_search_query)
     log.info('Got search results')
-    return generate_search_query, search_results
+    return generated_search_query, search_results
 
 async def generate_wisdom(message_history: list[dict]):
     requires_internet_message: list[dict] = message_history.copy()
