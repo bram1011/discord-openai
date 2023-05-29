@@ -26,7 +26,7 @@ multidict==6.0.4
 numpy==1.24.2
 openai==0.27.2
 packaging==23.1
-pandas==2.0.0
+pandas==2.0.2
 Pillow==9.5.0
 plotly==5.14.1
 pyee==9.0.4
