@@ -23,6 +23,7 @@ import functools
 import math
 import tiktoken
 from duckduckgo_search import ddg
+from urllib.parse import urlparse, quote_plus
 
 MAX_TOKENS = 8192
 MAX_WEB_TOKEN_BUDGET = math.floor(MAX_TOKENS * 0.8)
@@ -433,7 +434,7 @@ async def download_audio(url: str, output_dir: str, interaction: discord.Interac
     log.info(f'Downloading YouTube audio from {url}')
     try:
         await interaction.followup.send(content=f'Downloading YouTube audio from {url}', ephemeral=True, silent=True)
-        yt = YouTube(url)
+        yt = YouTube(url, use_oauth=True)
         try:
             filename = f'{make_safe_filename(yt.title)}.mp4'
         except exceptions.PytubeError:
@@ -474,7 +475,8 @@ async def download_yt_audio(interaction: discord.Interaction, urls: str = None, 
         return
     if len(file_paths) == 1:
         upload_response = requests.post(PLIK_URL, files={'file': open(file_paths[0]['path'], 'rb')})
-        download_url = upload_response.text
+        parsed_download_url = urlparse(upload_response.text)
+        download_url = f'{parsed_download_url.scheme}://{parsed_download_url.netloc}{quote_plus(parsed_download_url.path, safe="/")}'
         await interaction.followup.send(content=f'YouTube audio downloaded from 1 URL. Failed to download from {len(failures)} URLs. Download here: {download_url}', ephemeral=True)
         if os.path.exists(output_dir):
             shutil.rmtree(output_dir)
