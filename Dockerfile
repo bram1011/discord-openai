@@ -4,7 +4,7 @@ WORKDIR /
 
 RUN pip install --upgrade pip
 
-COPY *.py .env? settings.toml .secrets.toml? requirements.txt ./
+COPY src/*.py .env? settings.toml .secrets.toml? requirements.txt ./
 
 RUN pip install -r requirements.txt
 
