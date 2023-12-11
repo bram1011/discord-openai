@@ -38,7 +38,7 @@ plotly==5.15.0
 pyee==11.0.0
 pyparsing==3.1.0
 python-dateutil==2.8.2
-python-ffmpeg==2.0.4
+python-ffmpeg==2.0.7
 pytz==2023.3
 regex==2023.6.3
 requests==2.31.0
