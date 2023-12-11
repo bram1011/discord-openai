@@ -54,4 +54,4 @@ tqdm==4.65.0
 typing==3.7.4.3
 typing_extensions==4.7.1
 tzdata==2023.3
-yarl==1.9.2
+yarl==1.9.4
