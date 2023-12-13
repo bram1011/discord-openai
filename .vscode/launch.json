@@ -13,7 +13,7 @@
             "name": "Start bot",
             "type": "python",
             "request": "launch",
-            "program": "bot.py",
+            "program": "src/bot.py",
             "justMyCode": true
         }
     ]
